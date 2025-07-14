@@ -5,7 +5,7 @@ import json
 import os
 
 BOT_TOKEN = '8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo'
-CHAT_ID = 'YOUR_CHAT_ID'  # Replace with your actual chat_id
+CHAT_ID = '6668744108'  # Replace with your actual chat_id
 
 def get_2nd_sem_update():
     url = "https://www.wbsuexams.net/"
