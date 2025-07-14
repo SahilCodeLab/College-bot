@@ -1,8 +1,7 @@
 services:
-  - type: cron
+  - type: web
     name: wbsu-2ndsem-bot
     runtime: python
     plan: free
-    schedule: "*/30 * * * *"  # Every 30 minutes
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
