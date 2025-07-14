@@ -68,6 +68,7 @@ def get_2nd_sem_update():
     urls = [
         "https://www.wbsuexams.net/",
         "https://brsnc.in/"
+        "https://sahilcodelab.github.io/wbsu-info/verify.html"
     ]
     keywords = [
         "2nd semester", "ii semester", "sem 2", "2 sem",
