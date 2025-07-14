@@ -1,77 +1,145 @@
 import threading
 import time
 import requests
-from bs4 import BeautifulSoup
 import json
 import os
 import urllib3
+from bs4 import BeautifulSoup
 from flask import Flask
 
-# 🔕 Disable SSL warnings
+# 🔕 Disable SSL Warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ✅ Telegram Bot Details
+# ✅ Configuration
 BOT_TOKEN = '8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo'
 CHAT_ID = '6668744108'
+GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY_HERE'
+URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# ✅ Flask app for Render port binding
+# ✅ Flask App (for Render)
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "WBSU Bot is running!"
+    return "✅ Sahil's Smart Bot is Running!"
 
-# ✅ Scrape WBSU website for 2nd Semester updates
+# ✅ Get 2nd Semester Update
 def get_2nd_sem_update():
-    url = "https://www.wbsuexams.net/"
-    r = requests.get(url, verify=False)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    for link in soup.find_all('a'):
-        text = link.text.strip()
-        href = link.get('href')
-        if "2nd Semester" in text or "II Semester" in text:
-            return f"{text}\n🔗 Link: {href}"
+    websites = [
+        "https://www.wbsuexams.net/",
+        "https://brsnc.in/"
+        "https://sahilcodelab.github.io/wbsu-info/verify.html"
+    ]
+    sem_keywords = [
+        "2nd semester", "ii semester", "sem 2", "2 sem",
+        "semester two", "2sem", "2 nd sem"
+    ]
+
+    for url in websites:
+        try:
+            r = requests.get(url, verify=False, timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+
+            for link in soup.find_all('a'):
+                text = link.text.strip()
+                href = link.get('href')
+                text_lower = text.lower()
+
+                if any(key in text_lower for key in sem_keywords):
+                    full_link = href if href.startswith("http") else url + href
+                    return {
+                        "text": text,
+                        "link": full_link,
+                        "source": url
+                    }
+
+        except Exception as e:
+            print(f"❌ Error scraping {url}: {e}")
     return None
 
-# ✅ Load last sent notice
+# ✅ Load/Save last notice
 def load_last():
     if os.path.exists("last_notice.json"):
         with open("last_notice.json", "r") as f:
             return json.load(f).get("notice")
     return ""
 
-# ✅ Save the latest notice
-def save_notice(notice):
+def save_notice(notice_text):
     with open("last_notice.json", "w") as f:
-        json.dump({"notice": notice}, f)
+        json.dump({"notice": notice_text}, f)
 
-# ✅ Send Telegram message
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+# ✅ Telegram Send
+def send_telegram(chat_id, msg):
     data = {
-        "chat_id": CHAT_ID,
+        "chat_id": chat_id,
         "text": msg,
         "parse_mode": "Markdown"
     }
-    requests.post(url, data=data)
+    requests.post(f"{URL}/sendMessage", data=data)
 
-# ✅ Background task to check every 10 mins
-def run_bot_forever():
-    send_telegram("✅ Bot test message from Sahil 🚀")  # Test message
+# ✅ Gemini API
+def ask_gemini(prompt):
+    headers = {
+        "Content-Type": "application/json",
+        "X-goog-api-key": GEMINI_API_KEY
+    }
+    data = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ]
+    }
+    r = requests.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        headers=headers,
+        data=json.dumps(data)
+    )
+    if r.status_code == 200:
+        return r.json()['candidates'][0]['content']['parts'][0]['text']
+    else:
+        return "❌ Gemini Error."
+
+# ✅ Auto-notice Thread
+def update_checker():
+    send_telegram(CHAT_ID, "🤖 Auto-notice bot started.")
     while True:
         try:
-            new_notice = get_2nd_sem_update()
-            old_notice = load_last()
-            if new_notice and new_notice != old_notice:
-                send_telegram("📢 *New 2nd Semester Update Found:*\n\n" + new_notice)
-                save_notice(new_notice)
+            notice = get_2nd_sem_update()
+            old = load_last()
+            if notice and notice["text"] != old:
+                summary = ask_gemini(notice["text"]) or notice["text"]
+                msg = f"📢 *New 2nd Semester Update!*\n\n📝 {summary}\n\n🔗 [Open Notice]({notice['link']})\n🌐 Source: {notice['source']}"
+                send_telegram(CHAT_ID, msg)
+                save_notice(notice["text"])
             else:
-                print("✅ No update yet.")
+                print("✅ No new update.")
         except Exception as e:
-            print("❌ Error:", e)
-        time.sleep(600)  # 10 minutes
+            print("❌ Update checker error:", e)
+        time.sleep(600)  # 10 min
 
-# ✅ Start both Flask server + Bot
+# ✅ Gemini Chat Thread
+def gemini_chatbot():
+    offset = None
+    while True:
+        try:
+            updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout": 100}).json()
+            for update in updates.get("result", []):
+                message = update.get("message", {})
+                chat_id = message["chat"]["id"]
+                user_msg = message.get("text", "")
+
+                if user_msg:
+                    print(f"👤 {chat_id}: {user_msg}")
+                    reply = ask_gemini(user_msg)
+                    send_telegram(chat_id, reply)
+                offset = update["update_id"] + 1
+        except Exception as e:
+            print("❌ Gemini chat error:", e)
+        time.sleep(1)
+
+# ✅ Start All Threads
 if __name__ == '__main__':
-    threading.Thread(target=run_bot_forever).start()
+    threading.Thread(target=update_checker).start()
+    threading.Thread(target=gemini_chatbot).start()
     app.run(host='0.0.0.0', port=10000)
