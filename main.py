@@ -52,6 +52,7 @@ def send_telegram(msg):
 
 # Run this in background thread
 def run_bot_forever():
+  send_telegram("✅ Bot test message from Sahil 🚀")
     while True:
         try:
             new_notice = get_2nd_sem_update()
