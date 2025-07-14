@@ -3,6 +3,6 @@ services:
     name: wbsu-2ndsem-bot
     runtime: python
     plan: free
-    schedule: "*/30 * * * *"  # Run every 30 minutes
+    schedule: "*/30 * * * *"  # Every 30 minutes
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
