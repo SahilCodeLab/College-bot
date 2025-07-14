@@ -10,18 +10,19 @@ from flask import Flask
 # 🔕 SSL warnings disable
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ✅ Telegram & Gemini Config from ENV or fallback
+# ✅ Configs from environment or fallback default
 BOT_TOKEN = os.environ.get("BOT_TOKEN") or "8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo"
 CHAT_ID = os.environ.get("CHAT_ID") or "6668744108"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or "AIzaSyD8VIC30KvQ34TY34wIArmXMOH1uQa73Qo"
 
-# ✅ Flask for Render port binding
+# ✅ Flask app for Render port binding
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "✅ Sahil's Bot is Running"
 
-# ✅ Telegram send
+# ✅ Telegram message sender
 def send_telegram(chat_id, msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
@@ -34,7 +35,7 @@ def send_telegram(chat_id, msg):
     except:
         print("❌ Telegram send failed.")
 
-# ✅ Gemini reply
+# ✅ Gemini AI integration
 def ask_gemini(prompt):
     headers = {
         "Content-Type": "application/json",
@@ -63,37 +64,37 @@ def ask_gemini(prompt):
         print("❌ Gemini Exception:", e)
         return "❌ Gemini Error."
 
-# ✅ Scrape notice
+# ✅ Scrape notice for 2nd semester
 def get_2nd_sem_update():
     urls = [
         "https://www.wbsuexams.net/",
         "https://brsnc.in/",
         "https://sahilcodelab.github.io/wbsu-info/verify.html"
     ]
-    
-KEYWORDS = [
-    "2nd semester",
-    "ii semester",
-    "2 semester",
-    "sem 2",
-    "2 sem",
-    "2sem",
-    "2-nd semester",
-    "semester 2",
-    "semester two",
-    "second semester",
-    "2nd sem",
-    "2 nd semester",
-    "second sem",
-    "sem ii",
-    "sem-2",
-    "sem2",
-    "2ndsem",
-    "2ndsem result",
-    "2nd sem result",
-    "result of 2nd semester",
-    "wbsu 2nd semester"
-]
+
+    KEYWORDS = [
+        "2nd semester",
+        "ii semester",
+        "2 semester",
+        "sem 2",
+        "2 sem",
+        "2sem",
+        "2-nd semester",
+        "semester 2",
+        "semester two",
+        "second semester",
+        "2nd sem",
+        "2 nd semester",
+        "second sem",
+        "sem ii",
+        "sem-2",
+        "sem2",
+        "2ndsem",
+        "2ndsem result",
+        "2nd sem result",
+        "result of 2nd semester",
+        "wbsu 2nd semester"
+    ]
 
     for site in urls:
         try:
@@ -102,7 +103,7 @@ KEYWORDS = [
             for link in soup.find_all('a'):
                 text = link.text.strip().lower()
                 href = link.get('href', '')
-                if any(k in text for k in keywords):
+                if any(k in text for k in KEYWORDS):
                     full_link = href if href.startswith("http") else site + href
                     return {
                         "text": link.text.strip(),
@@ -113,7 +114,7 @@ KEYWORDS = [
             print(f"❌ Error scraping {site}:", e)
     return None
 
-# ✅ Load & Save Notice
+# ✅ Load & save last notice
 def load_last():
     if os.path.exists("last_notice.json"):
         with open("last_notice.json", "r") as f:
@@ -124,7 +125,7 @@ def save_notice(text):
     with open("last_notice.json", "w") as f:
         json.dump({"notice": text}, f)
 
-# ✅ Auto Notice Checker
+# ✅ Check notice loop (every 5 min)
 def check_notice_loop():
     send_telegram(CHAT_ID, "🤖 Bot started by Sahil.")
     while True:
@@ -140,9 +141,9 @@ def check_notice_loop():
                 print("✅ No new update.")
         except Exception as e:
             print("❌ Update check failed:", e)
-        time.sleep(300)  # 10 min
+        time.sleep(300)  # Every 5 min
 
-# ✅ Gemini Chatbot Listener
+# ✅ Telegram chat listener
 def telegram_chat_loop():
     offset = None
     while True:
@@ -162,7 +163,7 @@ def telegram_chat_loop():
             print("❌ Telegram chat error:", e)
         time.sleep(1)
 
-# ✅ Start Flask + Threads
+# ✅ Start Flask + threads
 if __name__ == "__main__":
     threading.Thread(target=check_notice_loop).start()
     threading.Thread(target=telegram_chat_loop).start()
