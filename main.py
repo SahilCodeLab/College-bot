@@ -1,21 +1,28 @@
+import threading
+import time
 import requests
 from bs4 import BeautifulSoup
 import json
 import os
 import urllib3
-import time
+from flask import Flask
 
-# ✅ Disable SSL warnings (optional but helpful on Render)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ✅ Telegram Bot Details
+# Telegram Bot Details
 BOT_TOKEN = '8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo'
-CHAT_ID = '6668744108'  # ← Tera chat ID
+CHAT_ID = '6668744108'
 
-# ✅ Scrape WBSU site for 2nd Sem updates
+# Flask app for port binding (Render requirement)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "WBSU Bot is running!"
+
 def get_2nd_sem_update():
     url = "https://www.wbsuexams.net/"
-    r = requests.get(url, verify=False)  # ← SSL bypass
+    r = requests.get(url, verify=False)
     soup = BeautifulSoup(r.text, 'html.parser')
     for link in soup.find_all('a'):
         text = link.text.strip()
@@ -24,19 +31,16 @@ def get_2nd_sem_update():
             return f"{text}\n🔗 Link: {href}"
     return None
 
-# ✅ Load last saved notice from file
 def load_last():
     if os.path.exists("last_notice.json"):
         with open("last_notice.json", "r") as f:
             return json.load(f).get("notice")
     return ""
 
-# ✅ Save new notice to file
 def save_notice(notice):
     with open("last_notice.json", "w") as f:
         json.dump({"notice": notice}, f)
 
-# ✅ Send message to Telegram
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
@@ -46,8 +50,8 @@ def send_telegram(msg):
     }
     requests.post(url, data=data)
 
-# ✅ Run every 10 minutes — Forever
-def run_forever():
+# Run this in background thread
+def run_bot_forever():
     while True:
         try:
             new_notice = get_2nd_sem_update()
@@ -56,12 +60,12 @@ def run_forever():
                 send_telegram("📢 *New 2nd Semester Update Found:*\n\n" + new_notice)
                 save_notice(new_notice)
             else:
-                print("✅ No update found. Rechecking after 10 min.")
+                print("✅ No update yet.")
         except Exception as e:
             print("❌ Error:", e)
-
-        # ⏰ Wait for 10 minutes before next check
         time.sleep(600)
 
-if __name__ == "__main__":
-    run_forever()
+# Start both Flask and Bot
+if __name__ == '__main__':
+    threading.Thread(target=run_bot_forever).start()
+    app.run(host='0.0.0.0', port=10000)
