@@ -119,7 +119,7 @@ def check_notice_loop():
                 print("✅ No new update.")
         except Exception as e:
             print("❌ Update check failed:", e)
-        time.sleep(600)  # 10 min
+        time.sleep(300)  # 10 min
 
 # ✅ Gemini Chatbot Listener
 def telegram_chat_loop():
