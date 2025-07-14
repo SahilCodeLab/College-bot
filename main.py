@@ -70,10 +70,31 @@ def get_2nd_sem_update():
         "https://brsnc.in/",
         "https://sahilcodelab.github.io/wbsu-info/verify.html"
     ]
-    keywords = [
-        "2nd semester", "ii semester", "sem 2", "2 sem",
-        "semester two", "2sem", "2 nd sem"
-    ]
+    
+KEYWORDS = [
+    "2nd semester",
+    "ii semester",
+    "2 semester",
+    "sem 2",
+    "2 sem",
+    "2sem",
+    "2-nd semester",
+    "semester 2",
+    "semester two",
+    "second semester",
+    "2nd sem",
+    "2 nd semester",
+    "second sem",
+    "sem ii",
+    "sem-2",
+    "sem2",
+    "2ndsem",
+    "2ndsem result",
+    "2nd sem result",
+    "result of 2nd semester",
+    "wbsu 2nd semester"
+]
+
     for site in urls:
         try:
             r = requests.get(site, verify=False, timeout=10)
