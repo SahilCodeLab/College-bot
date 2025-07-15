@@ -1,4 +1,5 @@
-# secure_notice_bot.py
+# main.py
+
 import threading
 import time
 import requests
@@ -11,18 +12,18 @@ import logging
 from datetime import datetime
 import pytz
 
-# Disable SSL warnings
+# Disable SSL Warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Environment Variables (set in Render.com dashboard)
+# ENV variables (Set in Render dashboard)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# Constants and Configuration
+# Files & Config
 SENT_NOTICES_FILE = "sent_notices.json"
 USER_DATA_FILE = "user_data.json"
-CHECK_INTERVAL = 300  # 5 minutes
+CHECK_INTERVAL = 300  # 5 mins
 MAX_NOTICES = 5
 
 URLS = [
@@ -40,7 +41,7 @@ KEYWORDS = [
     "routine for 2nd sem", "2nd semester exam date", "ii sem practical"
 ]
 
-# Logging Setup
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,7 +51,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 
 class NoticeBot:
@@ -101,9 +101,7 @@ class NoticeBot:
             "Authorization": f"Bearer {GROQ_API_KEY}"
         }
         data = {
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
+            "messages": [{"role": "user", "content": prompt}],
             "model": "llama3-8b-8192"
         }
         try:
@@ -143,10 +141,15 @@ class NoticeBot:
             for notice in self.scrape_site(site):
                 if notice['text'] not in self.sent_notices['notices']:
                     summary = self.ask_groq(f"Summarize in one line: {notice['text']}")
-                    msg = f"\ud83d\udce2 *{notice['source']} Notice:*
-\n\ud83d\udcdd {summary}
-\n\ud83d\udd17 [View Notice]({notice['link']})
-\n\u23f0 {notice['timestamp']}"
+                    msg = f"""
+📢 *{notice['source']} Notice:*
+
+📝 {summary}
+
+🔗 [View Notice]({notice['link']})
+
+⏰ {notice['timestamp']}
+"""
                     self.send_telegram(CHAT_ID, msg)
                     new_notices.append(notice['text'])
         if new_notices:
@@ -155,8 +158,8 @@ class NoticeBot:
             logger.info(f"Sent {len(new_notices)} new notices")
 
     def notice_loop(self):
-        logger.info("\u23f3 Starting notice checker loop...")
-        self.send_telegram(CHAT_ID, f"\ud83e\udd16 WBSU Notice Bot Activated!\nLast Check: {self.get_ist_time()}")
+        logger.info("⏳ Starting notice checker loop...")
+        self.send_telegram(CHAT_ID, f"🤖 WBSU Notice Bot Activated!\nLast Check: {self.get_ist_time()}")
         while True:
             try:
                 self.check_notices()
@@ -188,7 +191,7 @@ bot = NoticeBot()
 
 @app.route('/')
 def home():
-    return "\ud83e\udd16 WBSU Notice Bot Running Securely"
+    return "🤖 WBSU Notice Bot Running Securely"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
