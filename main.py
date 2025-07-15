@@ -1,4 +1,4 @@
-# main.py
+# dil_se_notice_bot.py
 import threading
 import time
 import requests
@@ -8,43 +8,38 @@ import json
 import os
 from flask import Flask, request
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
-# Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Environment Variables (Set these in Render)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# Configuration
 SENT_NOTICES_FILE = "sent_notices.json"
 USER_DATA_FILE = "user_data.json"
-CHECK_INTERVAL = 300  # 5 minutes
+CHECK_INTERVAL = 300
 MAX_NOTICES = 5
 
 URLS = [
     {"url": "https://www.wbsuexams.net/", "name": "WBSU Official"},
     {"url": "https://brsnc.in/", "name": "BRS Nagar College"},
-    {"url": "https://sahilcodelab.github.io/wbsu-info/verify.html", "name": "Sahil's Info Hub"}
+    {"url": "https://sahilcodelab.github.io/wbsu-info/verify.html", "name": "Sahil's Info Hub"},
 ]
 
 KEYWORDS = [
     "2nd semester", "ii semester", "2 semester", "sem 2", "2 sem", "2sem",
     "2-nd semester", "semester 2", "semester two", "second semester",
-    "2nd sem", "2 nd semester", "second sem", "sem ii", "sem-2",
-    "sem2", "2ndsem", "2ndsem result", "result of 2nd semester",
-    "wbsu 2nd semester", "2nd sem result", "2nd sem notice",
-    "routine for 2nd sem", "2nd semester exam date", "ii sem practical"
+    "2nd sem", "second sem", "sem ii", "sem-2", "sem2", "2ndsem", "2ndsem result",
+    "wbsu 2nd semester", "2nd sem result", "2nd sem notice", "routine for 2nd sem",
+    "2nd semester exam date", "ii sem practical"
 ]
 
-# Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler(), logging.FileHandler('bot.log')]
 )
 logger = logging.getLogger(__name__)
 
@@ -62,7 +57,7 @@ class NoticeBot:
                 with open(filename, 'r') as f:
                     return json.load(f)
         except Exception as e:
-            logger.error(f"Error loading {filename}: {e}")
+            logger.error(f"Load error {filename}: {e}")
         return default
 
     def save_data(self, filename, data):
@@ -70,171 +65,127 @@ class NoticeBot:
             with open(filename, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            logger.error(f"Error saving {filename}: {e}")
+            logger.error(f"Save error {filename}: {e}")
 
-    def get_ist_time(self):
-        return datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')
+    def get_time(self):
+        return datetime.now(pytz.timezone('Asia/Kolkata'))
 
-    def send_telegram(self, chat_id, message):
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
+    def send_telegram(self, chat_id, text):
         try:
-            res = requests.post(url, json=payload, timeout=10)
-            if not res.json().get('ok'):
-                logger.error(f"Telegram error: {res.text}")
+            res = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }, timeout=10)
             return res.json()
         except Exception as e:
-            logger.error(f"Telegram send error: {e}")
-            return None
+            logger.error(f"Telegram error: {e}")
 
     def ask_groq(self, prompt):
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        data = {
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "model": "llama3-8b-8192"
+        payload = {
+            "model": "llama3-8b-8192",
+            "messages": [{"role": "user", "content": prompt}]
         }
         try:
-            res = requests.post("https://api.groq.com/openai/v1/chat/completions", json=data, headers=headers)
-            return res.json()['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            logger.error(f"GROQ error: {e}")
-            return "New notice released."
+            res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            return res.json()['choices'][0]['message']['content']
+        except:
+            return "\u274c Summary unavailable"
 
-    def scrape_site(self, site_info):
+    def scrape_site(self, site):
         try:
-            res = requests.get(site_info["url"], verify=False, timeout=15)
-            soup = BeautifulSoup(res.text, 'html.parser')
+            r = requests.get(site["url"], verify=False, timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
             notices = []
-            for link in soup.find_all('a'):
-                text = link.text.strip().lower()
-                href = link.get('href', '')
-                if any(keyword in text for keyword in KEYWORDS):
-                    full_link = href if href.startswith('http') else f"{site_info['url'].rstrip('/')}/{href.lstrip('/')}"
+            for a in soup.find_all("a"):
+                text = a.text.strip()
+                href = a.get("href", "")
+                full_link = href if href.startswith("http") else site["url"].rstrip("/") + "/" + href.lstrip("/")
+                if any(k in text.lower() for k in KEYWORDS):
+                    if any(y in text for y in ["2023", "2022", "2021"]):
+                        continue
                     notices.append({
-                        "text": link.text.strip(),
+                        "text": text,
                         "link": full_link,
-                        "source": site_info["name"],
-                        "timestamp": self.get_ist_time()
+                        "source": site["name"],
+                        "timestamp": self.get_time().strftime("%Y-%m-%d %H:%M:%S")
                     })
             return notices
         except Exception as e:
-            logger.error(f"Scrape error: {e}")
+            logger.error(f"Scrape error {site['name']}: {e}")
             return []
 
     def check_notices(self):
-        self.last_check = self.get_ist_time()
-        new_notices = []
+        self.last_check = self.get_time()
+        new = []
         for site in URLS:
             for notice in self.scrape_site(site):
-                if "2024" in notice["text"].lower() or "2023" in notice["text"].lower():
-                    continue  # 🛑 Skip old year
-                if notice["text"] not in self.sent_notices["notices"]:
-                    summary = self.ask_groq(f"Summarize this in 1 short line: {notice['text']}")
-                    msg = (
-                        f"🔔 *{notice['source']} Notice:*\n\n"
-                        f"📝 {summary}\n\n"
-                        f"🔗 [Open Notice]({notice['link']})\n"
-                        f"🕒 {notice['timestamp']}"
-                    )
+                if notice['text'] not in self.sent_notices['notices']:
+                    summary = self.ask_groq(f"Summarize shortly: {notice['text']}").split(". ")[0]
+                    msg = f"\ud83d\udd14 *{notice['source']} Notice*\n\n\ud83d\udcdd {summary}\n\n\ud83d\udd17 [Open Notice]({notice['link']})\n\u23f0 {notice['timestamp']}"
                     self.send_telegram(CHAT_ID, msg)
-                    new_notices.append(notice["text"])
-        if new_notices:
-            self.sent_notices["notices"].extend(new_notices)
+                    new.append(notice['text'])
+        if new:
+            self.sent_notices['notices'].extend(new)
             self.save_data(SENT_NOTICES_FILE, self.sent_notices)
-            logger.info(f"📬 Sent {len(new_notices)} new notices.")
+
+    def human_chat(self, text):
+        if "/" in text:
+            return None
+        keywords = ["help", "udaas", "sad", "problem", "friend", "alone", "can you"]
+        if any(k in text.lower() for k in keywords):
+            return self.ask_groq(f"Friendly, kind and short reply to user: {text}")
+        return f"👋 Hello! Type /notice to check WBSU 2nd Sem updates. I'm here if you need anything!"
 
     def telegram_polling(self):
         offset = None
         while True:
             try:
-                url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-                res = requests.get(url, params={"offset": offset, "timeout": 30}).json()
-                if res.get("ok"):
-                    for update in res["result"]:
-                        offset = update["update_id"] + 1
-                        msg = update.get("message", {})
-                        chat_id = msg.get("chat", {}).get("id")
-                        text = msg.get("text", "")
-                        if text.startswith("/"):
-                            self.handle_command(chat_id, text)
-                        else:
-                            self.send_telegram(chat_id, "👋 Hello! I'm your friendly WBSU Notice Bot.\nType /notice to check latest updates.")
+                res = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", params={"offset": offset, "timeout": 30})
+                for upd in res.json().get("result", []):
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message", {})
+                    chat_id = msg.get("chat", {}).get("id")
+                    text = msg.get("text", "")
+                    if not text: continue
+                    logger.info(f"User said: {text}")
+                    if text.lower() == "/start":
+                        self.send_telegram(chat_id, "\ud83d\ude0a Welcome to WBSU Notice Bot!\n\nCommands:\n/notice - Get latest\n/status - Bot status\n/help - Get help")
+                    elif text.lower() == "/notice":
+                        self.check_notices()
+                        self.send_telegram(chat_id, "✅ Notices checked! If new found, sent above.")
+                    elif text.lower() == "/status":
+                        self.send_telegram(chat_id, f"\ud83d\ude80 Bot is running. Last check: {self.last_check.strftime('%H:%M %d-%m-%Y') if self.last_check else 'Not yet'}")
+                    elif text.lower() == "/help":
+                        self.send_telegram(chat_id, "Type /notice to see updates. Or share what's on your mind ❤\ufe0f")
+                    else:
+                        reply = self.human_chat(text)
+                        if reply:
+                            self.send_telegram(chat_id, reply)
             except Exception as e:
                 logger.error(f"Polling error: {e}")
-                time.sleep(5)
-
-    def handle_command(self, chat_id, command):
-        command = command.strip().lower()
-        if chat_id not in self.user_data["users"]:
-            self.user_data["users"][str(chat_id)] = {
-                "first_seen": self.get_ist_time(),
-                "last_active": self.get_ist_time()
-            }
-        else:
-            self.user_data["users"][str(chat_id)]["last_active"] = self.get_ist_time()
-        self.save_data(USER_DATA_FILE, self.user_data)
-
-        if command == "/start":
-            msg = (
-                "🎓 *Welcome to WBSU Notice Bot!*\n\n"
-                "I auto-check for 2nd sem notices every 5 mins.\n\n"
-                "📌 *Available Commands:*\n"
-                "`/notice` - Get latest notices\n"
-                "`/status` - Bot health\n"
-                "`/help` - Show commands again"
-            )
-            self.send_telegram(chat_id, msg)
-        elif command == "/notice":
-            notices = []
-            for site in URLS:
-                notices.extend(self.scrape_site(site))
-            filtered = [n for n in notices if "2024" not in n["text"].lower() and "2023" not in n["text"].lower()]
-            if filtered:
-                for notice in filtered[:MAX_NOTICES]:
-                    summary = self.ask_groq(f"Short summary: {notice['text']}")
-                    self.send_telegram(chat_id, f"🔔 *{notice['source']}*\n📝 {summary}\n🔗 [View]({notice['link']})")
-            else:
-                self.send_telegram(chat_id, "📭 No recent 2nd semester notices found.")
-        elif command == "/status":
-            msg = (
-                f"🤖 *Bot Status*\n\n"
-                f"⏰ Last Checked: {self.last_check or 'Not checked yet'}\n"
-                f"📌 Notices Tracked: {len(self.sent_notices['notices'])}\n"
-                f"👤 Users: {len(self.user_data['users'])}\n"
-                f"⏱️ Checking every {CHECK_INTERVAL//60} min"
-            )
-            self.send_telegram(chat_id, msg)
-        elif command == "/help":
-            self.handle_command(chat_id, "/start")
-        else:
-            self.send_telegram(chat_id, "❓ I didn't understand. Type /help for options.")
+                time.sleep(10)
 
 bot = NoticeBot()
 
-@app.route("/")
+@app.route('/')
 def home():
-    return "🤖 WBSU Notice Bot is Running"
+    return "\ud83e\udd16 Dil Se WBSU Notice Bot is Live."
 
-@app.route("/webhook", methods=["POST"])
+@app.route('/webhook', methods=['POST'])
 def webhook():
     update = request.json
-    if 'message' in update:
-        message = update['message']
-        chat_id = message['chat']['id']
-        text = message.get('text', '')
-        if text:
-            bot.handle_command(chat_id, text)
-    return 'OK', 200
+    msg = update.get("message", {})
+    chat_id = msg.get("chat", {}).get("id")
+    text = msg.get("text", "")
+    if text:
+        bot.send_telegram(chat_id, bot.human_chat(text) or "Use /notice to check updates")
+    return 'OK'
 
 def run_bot():
     threading.Thread(target=bot.check_notices, daemon=True).start()
@@ -242,5 +193,6 @@ def run_bot():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_bot()
+
