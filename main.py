@@ -6,14 +6,18 @@ from bs4 import BeautifulSoup
 import json
 import os
 from flask import Flask
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo")
-CHAT_ID = os.environ.get("CHAT_ID", "6668744108")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyD8VIC30KvQ34TY34wIArmXMOH1uQa73Qo")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Constants
 SENT_NOTICES_FILE = "sent_notices.json"
@@ -36,12 +40,10 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    """Return status message for Flask server."""
-    return "✅ Sahil's Multi-Match Bot is Running"
+    return "✅ Sahil's Multi-Match Bot is Running!"
 
 # Telegram message sender
 def send_telegram(chat_id, msg):
-    """Send a message to a Telegram chat."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": chat_id,
@@ -53,33 +55,29 @@ def send_telegram(chat_id, msg):
     except Exception as e:
         print(f"❌ Telegram send failed: {e}")
 
-# Gemini API interaction
-def ask_gemini(prompt):
-    """Query Gemini API for a one-line summary of the prompt."""
+# GROQ API interaction
+def ask_groq(prompt):
     headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
     }
     data = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "model": "llama3-70b-8192",
+        "messages": [{"role": "user", "content": prompt}]
     }
     try:
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-            headers=headers,
-            data=json.dumps(data)
-        )
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
         if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
-        print(f"❌ Gemini Error Code: {response.status_code}")
-        return "❌ Gemini summary error."
+            return response.json()["choices"][0]["message"]["content"]
+        else:
+            print(f"❌ GROQ Error: {response.status_code}")
+            return "❌ GROQ summary error."
     except Exception as e:
-        print(f"❌ Gemini Exception: {e}")
-        return "❌ Gemini error."
+        print(f"❌ GROQ Exception: {e}")
+        return "❌ GROQ error."
 
 # Scrape 2nd semester updates
 def get_all_2nd_sem_updates():
-    """Scrape websites for all 2nd semester notices."""
     notices = []
     for site in URLS:
         try:
@@ -101,20 +99,17 @@ def get_all_2nd_sem_updates():
 
 # Load and save sent notices
 def load_sent_notices():
-    """Load previously sent notices from file."""
     if os.path.exists(SENT_NOTICES_FILE):
         with open(SENT_NOTICES_FILE, "r") as f:
             return json.load(f).get("notices", [])
     return []
 
 def save_sent_notices(notices):
-    """Save the list of sent notices to file."""
     with open(SENT_NOTICES_FILE, "w") as f:
         json.dump({"notices": notices}, f)
 
 # Auto notice checker
 def check_notice_loop():
-    """Continuously check for new 2nd semester notices."""
     send_telegram(CHAT_ID, "🤖 Multi-match bot started by Sahil!")
     sent_notices = load_sent_notices()
     while True:
@@ -123,7 +118,7 @@ def check_notice_loop():
             for notice in found_notices:
                 if notice['text'] not in sent_notices:
                     prompt = f"Summarize this notice in 1 line: '{notice['text']}'"
-                    summary = ask_gemini(prompt)
+                    summary = ask_groq(prompt)
                     msg = (
                         f"📢 *New 2nd Semester Notice Found!*\n\n"
                         f"📝 {summary}\n\n"
