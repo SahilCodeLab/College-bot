@@ -10,12 +10,12 @@ from flask import Flask
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Configuration
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8051713350:AAEVZ0fRXLpZTPmNehEWEfVwQcOFXN9GBOo")
-CHAT_ID = os.environ.get("CHAT_ID", "6668744108")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyD8VIC30KvQ34TY34wIArmXMOH1uQa73Qo")
+# Configuration (ENV vars with fallback)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID", "YOUR_DEFAULT_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
 
-# Constants
+# Files & Constants
 SENT_NOTICES_FILE = "sent_notices.json"
 URLS = [
     "https://www.wbsuexams.net/",
@@ -31,17 +31,14 @@ KEYWORDS = [
     "routine for 2nd sem", "2nd semester exam date", "ii sem practical"
 ]
 
-# Flask setup
+# Flask app
 app = Flask(__name__)
-
 @app.route('/')
 def home():
-    """Return status message for Flask server."""
-    return "✅ Sahil's Multi-Match Bot is Running"
+    return "✅ Sahil's Bot is Live!"
 
-# Telegram message sender
+# 🔹 Telegram Message Sender
 def send_telegram(chat_id, msg):
-    """Send a message to a Telegram chat."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": chat_id,
@@ -51,11 +48,10 @@ def send_telegram(chat_id, msg):
     try:
         requests.post(url, data=data)
     except Exception as e:
-        print(f"❌ Telegram send failed: {e}")
+        print(f"❌ Telegram Error: {e}")
 
-# Gemini API interaction
+# 🔹 Gemini Summary
 def ask_gemini(prompt):
-    """Query Gemini API for a one-line summary of the prompt."""
     headers = {
         "Content-Type": "application/json",
         "X-goog-api-key": GEMINI_API_KEY
@@ -64,31 +60,30 @@ def ask_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}]
     }
     try:
-        response = requests.post(
+        r = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers=headers,
             data=json.dumps(data)
         )
-        if response.status_code == 200:
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
-        print(f"❌ Gemini Error Code: {response.status_code}")
-        return "❌ Gemini summary error."
+        if r.status_code == 200:
+            return r.json()['candidates'][0]['content']['parts'][0]['text']
+        print("Gemini Error Code:", r.status_code)
+        return "❌ Gemini Error."
     except Exception as e:
-        print(f"❌ Gemini Exception: {e}")
-        return "❌ Gemini error."
+        print("❌ Gemini Exception:", e)
+        return "❌ Gemini Error."
 
-# Scrape 2nd semester updates
+# 🔹 Scrape All Notices
 def get_all_2nd_sem_updates():
-    """Scrape websites for all 2nd semester notices."""
     notices = []
     for site in URLS:
         try:
-            response = requests.get(site, verify=False, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            res = requests.get(site, verify=False, timeout=10)
+            soup = BeautifulSoup(res.text, 'html.parser')
             for link in soup.find_all('a'):
                 text = link.text.strip().lower()
                 href = link.get('href', '')
-                if any(keyword in text for keyword in KEYWORDS):
+                if any(k in text for k in KEYWORDS):
                     full_link = href if href.startswith("http") else site + href
                     notices.append({
                         "text": link.text.strip(),
@@ -99,34 +94,30 @@ def get_all_2nd_sem_updates():
             print(f"❌ Error scraping {site}: {e}")
     return notices
 
-# Load and save sent notices
+# 🔹 Load/Save Notices
 def load_sent_notices():
-    """Load previously sent notices from file."""
     if os.path.exists(SENT_NOTICES_FILE):
         with open(SENT_NOTICES_FILE, "r") as f:
             return json.load(f).get("notices", [])
     return []
 
 def save_sent_notices(notices):
-    """Save the list of sent notices to file."""
     with open(SENT_NOTICES_FILE, "w") as f:
         json.dump({"notices": notices}, f)
 
-# Auto notice checker
+# 🔹 Notice Checker Thread
 def check_notice_loop():
-    """Continuously check for new 2nd semester notices."""
-    send_telegram(CHAT_ID, "🤖 Multi-match bot started by Sahil!")
+    send_telegram(CHAT_ID, "🤖 Bot started by Sahil!")
     sent_notices = load_sent_notices()
     while True:
         try:
             found_notices = get_all_2nd_sem_updates()
             for notice in found_notices:
                 if notice['text'] not in sent_notices:
-                    prompt = f"Summarize this notice in 1 line: '{notice['text']}'"
-                    summary = ask_gemini(prompt)
+                    summary = ask_gemini(f"1-line summary of: {notice['text']}")
                     msg = (
-                        f"📢 *New 2nd Semester Notice Found!*\n\n"
-                        f"📝 {summary}\n\n"
+                        f"📢 *New 2nd Semester Notice!*\n\n"
+                        f"📝 {summary}\n"
                         f"🔗 [{notice['text']}]({notice['link']})\n"
                         f"🌐 Source: {notice['source']}"
                     )
@@ -134,12 +125,52 @@ def check_notice_loop():
                     sent_notices.append(notice['text'])
                     save_sent_notices(sent_notices)
             else:
-                print("✅ No new updates.")
+                print("✅ No new update.")
         except Exception as e:
-            print(f"❌ Update check failed: {e}")
-        time.sleep(300)  # Check every 5 minutes
+            print(f"❌ Update error: {e}")
+        time.sleep(300)  # 5 min
 
-# Run bot and server
+# 🔹 ChatBot Gemini Listener
+def telegram_chat_loop():
+    offset = None
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            params = {"offset": offset, "timeout": 100}
+            res = requests.get(url, params=params).json()
+            for update in res.get("result", []):
+                msg = update.get("message", {})
+                chat = msg.get("chat", {})
+                user_id = chat.get("id")
+                text = msg.get("text", "").strip()
+                print("📩 Message from:", user_id, "|", text)
+
+                if text == "/start":
+                    send_telegram(user_id, "👋 Hello! I'm Sahil's WBSU Bot.\nUse /notice for 2nd Sem updates.")
+                elif text == "/notice":
+                    found = get_all_2nd_sem_updates()
+                    if found:
+                        n = found[0]
+                        summary = ask_gemini(f"1-line summary of: {n['text']}")
+                        msg = (
+                            f"📢 *Latest 2nd Semester Notice:*\n\n"
+                            f"📝 {summary}\n"
+                            f"🔗 [{n['text']}]({n['link']})\n"
+                            f"🌐 Source: {n['source']}"
+                        )
+                        send_telegram(user_id, msg)
+                    else:
+                        send_telegram(user_id, "🚫 No 2nd Semester updates found.")
+                else:
+                    reply = ask_gemini(text)
+                    send_telegram(user_id, reply)
+                offset = update["update_id"] + 1
+        except Exception as e:
+            print("❌ Telegram chat error:", e)
+        time.sleep(1)
+
+# 🔹 Run Flask + Threads
 if __name__ == "__main__":
     threading.Thread(target=check_notice_loop, daemon=True).start()
+    threading.Thread(target=telegram_chat_loop, daemon=True).start()
     app.run(host='0.0.0.0', port=10000)
