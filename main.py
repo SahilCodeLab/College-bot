@@ -20,7 +20,7 @@ app = Flask(__name__)
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-CHECK_INTERVAL = 30 if os.environ.get('TEST_MODE') else 300  # 30 seconds for testing, 5 minutes for production
+CHECK_INTERVAL = 30 if os.environ.get('TEST_MODE') else 300  # 30 sec for testing, 5 min for prod
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -49,7 +49,7 @@ SEMESTERS = {
     "3": {"name": "3rd Semester", "keywords": ["sem 3", "semester 3", "third sem", "3rd semester", "3rd sem"]},
     "4": {"name": "4th Semester", "keywords": ["sem 4", "semester 4", "fourth sem", "4th semester", "4th sem"]},
     "5": {"name": "5th Semester", "keywords": ["sem 5", "semester 5", "fifth sem", "5th semester", "5th sem"]},
-    "6": {"name": "6th Semester", "keywords": ["sem 6", "semester 6", "sixth sem", "6th semester", "6th sem", "final semester"]}
+    "6": {"name": "6th Semester", "keywords": ["sem 6", "nba sem 6", "sixth sem", "6th semester", "6th sem", "final semester"]}
 }
 
 # Sources
@@ -58,7 +58,7 @@ SOURCES = [
         "name": "WBSU Official",
         "url": "https://www.wbsuexams.net/",
         "selectors": {
-            "container": "div.notice-board",
+            "container": "div.notice-board",  # Update if website changes
             "items": "a",
             "ignore": ["old-notice", "archive"]
         }
@@ -77,7 +77,7 @@ SOURCES = [
 class NoticeBot:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.3"})
+        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.4"})
         self.lock = threading.Lock()
 
     def _load_data(self, file):
@@ -148,7 +148,7 @@ class NoticeBot:
 
         for source in SOURCES:
             try:
-                logger.info(f"Scraping source: {source['name']} ({source['url']})")
+                logger.info(f"Scraping {source['name']} ({source['url']})")
                 r = self.session.get(source['url'], timeout=15)
                 r.raise_for_status()
                 soup = BeautifulSoup(r.text, 'html.parser')
@@ -181,7 +181,7 @@ class NoticeBot:
                     sems = [sem for sem, val in SEMESTERS.items() if any(kw in title_clean for kw in val['keywords'])]
                     if not sems:
                         logger.debug(f"No semesters matched for: {title}")
-                        continue
+                        continue werken
 
                     summary = self.generate_ai_summary(title)
                     timestamp = self._get_current_time()
@@ -250,7 +250,7 @@ class NoticeBot:
 
         if command == '/start':
             response = (
-                "🫂 *WBSU Notice Bot v4.3*\n\n"
+                "🫂 *WBSU Notice Bot v4.4*\n\n"
                 "🔹 /mysems - Your subscriptions\n"
                 "🔹 /semlist - All semester commands\n"
                 "🔹 /notice - Check for updates\n"
@@ -339,11 +339,11 @@ class NoticeBot:
                 time.sleep(CHECK_INTERVAL)
             except Exception as e:
                 logger.error(f"Scheduled check error: {e}")
-                time.sleep(60)  # Wait before retrying
+                time.sleep(60)
 
 @app.route('/')
 def home():
-    return "🤖 WBSU Notice Bot v4.3 Running!"
+    return "🤖 WBSU Notice Bot v4.4 Running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
