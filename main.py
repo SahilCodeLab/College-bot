@@ -5,7 +5,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from flask import Flask, request
 from bs4 import BeautifulSoup
@@ -20,7 +20,7 @@ app = Flask(__name__)
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-CHECK_INTERVAL = 300  # 5 minutes
+CHECK_INTERVAL = 30 if os.environ.get('TEST_MODE') else 300  # 30 seconds for testing, 5 minutes for production
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -77,7 +77,7 @@ SOURCES = [
 class NoticeBot:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.2"})
+        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.3"})
         self.lock = threading.Lock()
 
     def _load_data(self, file):
@@ -101,6 +101,14 @@ class NoticeBot:
     def _get_current_time(self):
         return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
 
+    def _clean_old_notices(self, data):
+        cutoff = datetime.now(pytz.timezone('Asia/Kolkata')) - timedelta(days=30)
+        data['notices'] = {
+            k: v for k, v in data['notices'].items()
+            if datetime.strptime(v['timestamp'], "%Y-%m-%d %H:%M:%S") > cutoff
+        }
+        return data
+
     def send_telegram_message(self, chat_id, text):
         try:
             response = requests.post(
@@ -109,7 +117,7 @@ class NoticeBot:
                 timeout=10
             )
             response.raise_for_status()
-            logger.info(f"Sent message to {chat_id}")
+            logger.info(f"Sent message to {chat_id}: {text[:50]}...")
             return response.json()
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {e}")
@@ -140,6 +148,7 @@ class NoticeBot:
 
         for source in SOURCES:
             try:
+                logger.info(f"Scraping source: {source['name']} ({source['url']})")
                 r = self.session.get(source['url'], timeout=15)
                 r.raise_for_status()
                 soup = BeautifulSoup(r.text, 'html.parser')
@@ -149,23 +158,29 @@ class NoticeBot:
                     logger.warning(f"No container found for {source['name']}")
                     continue
 
-                for item in container.select(source['selectors']['items']):
+                items = container.select(source['selectors']['items'])
+                logger.info(f"Found {len(items)} items in {source['name']}")
+
+                for item in items:
                     if any(ignore in item.get('class', []) for ignore in source['selectors'].get('ignore', [])):
                         continue
 
                     title = item.get_text(strip=True)
                     href = item.get('href')
-                    if not title or not href or len(title) < 10:
+                    if not title or not href or len(title) < 5:
+                        logger.debug(f"Skipping item: title={title}, href={href}")
                         continue
 
                     url = href if href.startswith('http') else source['url'].rstrip('/') + '/' + href.lstrip('/')
                     notice_id = hashlib.md5(f"{title}{url}".encode()).hexdigest()
                     if notice_id in data['notices']:
+                        logger.debug(f"Notice already exists: {title}")
                         continue
 
                     title_clean = title.lower().replace('-', ' ').replace('–', ' ')
                     sems = [sem for sem, val in SEMESTERS.items() if any(kw in title_clean for kw in val['keywords'])]
                     if not sems:
+                        logger.debug(f"No semesters matched for: {title}")
                         continue
 
                     summary = self.generate_ai_summary(title)
@@ -189,12 +204,13 @@ class NoticeBot:
                         "timestamp": timestamp
                     }
 
-                    logger.info(f"New notice found: {title} ({source['name']})")
+                    logger.info(f"New notice found: {title} ({source['name']}) for semesters: {sems}")
 
             except Exception as e:
                 logger.error(f"Error checking source {source['name']}: {e}")
 
         if new_notices:
+            data = self._clean_old_notices(data)
             data["last_checked"] = self._get_current_time()
             self._save_data(NOTICES_FILE, data)
             logger.info(f"Found {len(new_notices)} new notices")
@@ -207,11 +223,14 @@ class NoticeBot:
             logger.warning("No users subscribed to notifications")
             return
 
+        logger.info(f"Processing {len(notices)} new notices for {len(users_data['users'])} users")
         for notice in notices:
             for user_id, user_info in users_data['users'].items():
-                if not user_info.get("semesters"):
+                semesters = user_info.get("semesters", [])
+                if not semesters:
+                    logger.debug(f"User {user_id} has no semester subscriptions")
                     continue
-                if any(sem in user_info.get("semesters", []) for sem in notice['sems']):
+                if any(sem in semesters for sem in notice['sems']):
                     sem_names = [SEMESTERS[s]['name'] for s in notice['sems']]
                     msg = (
                         f"📢 *{notice['source']} Notice*\n"
@@ -221,7 +240,7 @@ class NoticeBot:
                         f"⏰ {notice['timestamp']}"
                     )
                     self.send_telegram_message(user_id, msg)
-                    logger.info(f"Notified user {user_id} about notice {notice['title']}")
+                    logger.info(f"Notified user {user_id} about notice: {notice['title']}")
                     time.sleep(0.5)
 
     def handle_command(self, user_id, command):
@@ -231,7 +250,7 @@ class NoticeBot:
 
         if command == '/start':
             response = (
-                "🫂 *WBSU Notice Bot v4.2*\n\n"
+                "🫂 *WBSU Notice Bot v4.3*\n\n"
                 "🔹 /mysems - Your subscriptions\n"
                 "🔹 /semlist - All semester commands\n"
                 "🔹 /notice - Check for updates\n"
@@ -310,7 +329,7 @@ class NoticeBot:
     def run_scheduled_checks(self):
         while True:
             try:
-                logger.info("Starting scheduled check")
+                logger.info("Scheduled check thread alive")
                 new = self.check_for_updates()
                 if new:
                     logger.info(f"Scheduled check found {len(new)} new notices")
@@ -320,11 +339,11 @@ class NoticeBot:
                 time.sleep(CHECK_INTERVAL)
             except Exception as e:
                 logger.error(f"Scheduled check error: {e}")
-                time.sleep(60)  # Wait before retrying to avoid rapid failures
+                time.sleep(60)  # Wait before retrying
 
 @app.route('/')
 def home():
-    return "🤖 WBSU Notice Bot v4.2 Running!"
+    return "🤖 WBSU Notice Bot v4.3 Running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
