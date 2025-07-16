@@ -11,7 +11,11 @@ from flask import Flask, request
 from bs4 import BeautifulSoup
 import logging
 import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  # Disable SSL warnings
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,24 +29,11 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 CHECK_INTERVAL = 30 if os.environ.get('TEST_MODE') else 300  # 30 sec for testing, 5 min for prod
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
-
-# File paths
 NOTICES_FILE = os.path.join(DATA_DIR, 'notices.json')
-USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 
-# Init data
-def init_data_files():
-    defaults = {
-        NOTICES_FILE: {"notices": {}, "last_checked": None},
-        USERS_FILE: {"users": {}}
-    }
-    for file, default in defaults.items():
-        if not os.path.exists(file):
-            with open(file, 'w') as f:
-                json.dump(default, f)
-                logger.info(f"Initialized {file}")
-
-init_data_files()
+# Google Sheets Setup
+SPREADSHEET_ID = '10mBF-64emzmaI-wgrTZ063rDRFbpBLVF5laXxGHfrk0'
+CREDENTIALS_FILE = 'credentials.json'  # Place your Google API credentials JSON here
 
 # Semester keywords
 SEMESTERS = {
@@ -60,7 +51,7 @@ SOURCES = [
         "name": "WBSU Official",
         "url": "https://www.wbsuexams.net/",
         "selectors": {
-            "container": "div.notice-board",  # Update if website changes
+            "container": "div.notice-board",
             "items": "a",
             "ignore": ["old-notice", "archive"]
         }
@@ -79,26 +70,68 @@ SOURCES = [
 class NoticeBot:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.6"})
+        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.7"})
         self.lock = threading.Lock()
+        self.gc = self._init_google_sheets()
 
-    def _load_data(self, file):
-        with self.lock:
-            try:
-                with open(file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Error loading {file}: {e}")
-                return {"notices": {}, "last_checked": None} if file == NOTICES_FILE else {"users": {}}
+    def _init_google_sheets(self):
+        try:
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+            client = gspread.authorize(creds)
+            logger.info("Connected to Google Sheets")
+            return client
+        except Exception as e:
+            logger.error(f"Google Sheets initialization error: {e}")
+            raise
 
-    def _save_data(self, file, data):
-        with self.lock:
+    def _load_data(self, file=None):
+        if file == NOTICES_FILE:
+            with self.lock:
+                try:
+                    with open(file, 'r') as f:
+                        return json.load(f)
+                except Exception as e:
+                    logger.error(f"Error loading {file}: {e}")
+                    return {"notices": {}, "last_checked": None}
+        else:  # Load users from Google Sheets
             try:
-                with open(file, 'w') as f:
-                    json.dump(data, f, indent=2)
-                logger.info(f"Saved data to {file}")
+                sheet = self.gc.open_by_key(SPREADSHEET_ID).sheet1
+                records = sheet.get_all_records()
+                users = {}
+                for row in records:
+                    user_id = str(row.get('User ID', ''))
+                    name = row.get('Name', '')
+                    semesters = row.get('Semesters', '').split(',') if row.get('Semesters') else []
+                    semesters = [s.strip() for s in semesters if s.strip() in SEMESTERS]
+                    if user_id:
+                        users[user_id] = {"name": name, "semesters": semesters}
+                logger.info(f"Loaded {len(users)} users from Google Sheets")
+                return {"users": users}
             except Exception as e:
-                logger.error(f"Error saving {file}: {e}")
+                logger.error(f"Error loading users from Google Sheets: {e}")
+                return {"users": {}}
+
+    def _save_data(self, file=None, data=None):
+        if file == NOTICES_FILE:
+            with self.lock:
+                try:
+                    with open(file, 'w') as f:
+                        json.dump(data, f, indent=2)
+                    logger.info(f"Saved data to {file}")
+                except Exception as e:
+                    logger.error(f"Error saving {file}: {e}")
+        else:  # Save users to Google Sheets
+            try:
+                sheet = self.gc.open_by_key(SPREADSHEET_ID).sheet1
+                sheet.clear()
+                sheet.append_row(['User ID', 'Name', 'Semesters'])
+                for user_id, info in data['users'].items():
+                    semesters = ','.join(info.get('semesters', []))
+                    sheet.append_row([user_id, info.get('name', ''), semesters])
+                logger.info(f"Saved {len(data['users'])} users to Google Sheets")
+            except Exception as e:
+                logger.error(f"Error saving users to Google Sheets: {e}")
 
     def _get_current_time(self):
         return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
@@ -220,7 +253,7 @@ class NoticeBot:
         return new_notices
 
     def notify_users(self, notices):
-        users_data = self._load_data(USERS_FILE)
+        users_data = self._load_data()  # Load from Google Sheets
         if not users_data['users']:
             logger.warning("No users subscribed to notifications")
             return
@@ -229,30 +262,31 @@ class NoticeBot:
         for notice in notices:
             for user_id, user_info in users_data['users'].items():
                 semesters = user_info.get("semesters", [])
+                name = user_info.get("name", "User")
                 if not semesters:
-                    logger.debug(f"User {user_id} has no semester subscriptions")
+                    logger.debug(f"User {user_id} ({name}) has no semester subscriptions")
                     continue
                 if any(sem in semesters for sem in notice['sems']):
                     sem_names = [SEMESTERS[s]['name'] for s in notice['sems']]
                     msg = (
-                        f"📢 *{notice['source']} Notice*\n"
+                        f"Hi *{name}*! 📢 *{notice['source']} Notice*\n"
                         f"🎓 *For:* {', '.join(sem_names)}\n\n"
                         f"{notice['summary']}\n\n"
                         f"🔗 [View Notice]({notice['url']})\n"
                         f"⏰ {notice['timestamp']}"
                     )
                     self.send_telegram_message(user_id, msg)
-                    logger.info(f"Notified user {user_id} about notice: {notice['title']}")
+                    logger.info(f"Notified user {user_id} ({name}) about notice: {notice['title']}")
                     time.sleep(0.5)
 
     def handle_command(self, user_id, command):
         command = command.lower().strip()
         response = None
-        users_data = self._load_data(USERS_FILE)
+        users_data = self._load_data()  # Load from Google Sheets
 
         if command == '/start':
             response = (
-                "🫂 *WBSU Notice Bot v4.6*\n\n"
+                "🫂 *WBSU Notice Bot v4.7*\n\n"
                 "🔹 /mysems - Your subscriptions\n"
                 "🔹 /semlist - All semester commands\n"
                 "🔹 /notice - Check for updates\n"
@@ -267,7 +301,7 @@ class NoticeBot:
             if sem in SEMESTERS:
                 user_id = str(user_id)
                 if user_id not in users_data["users"]:
-                    users_data["users"][user_id] = {"semesters": []}
+                    users_data["users"][user_id] = {"name": "User", "semesters": []}
                 sems = users_data["users"][user_id]["semesters"]
                 if sem in sems:
                     sems.remove(sem)
@@ -275,7 +309,7 @@ class NoticeBot:
                 else:
                     sems.append(sem)
                     action = "added"
-                self._save_data(USERS_FILE, users_data)
+                self._save_data(data=users_data)
                 response = f"✅ {SEMESTERS[sem]['name']} {action} successfully!"
             else:
                 response = "❌ Invalid semester."
@@ -283,10 +317,11 @@ class NoticeBot:
         elif command == '/mysems':
             info = users_data["users"].get(str(user_id), {})
             sems = info.get("semesters", [])
+            name = info.get("name", "User")
             if sems:
-                response = "📚 *Your Subscriptions:*\n" + "\n".join([SEMESTERS[s]['name'] for s in sems])
+                response = f"📚 *{name}'s Subscriptions:*\n" + "\n".join([SEMESTERS[s]['name'] for s in sems])
             else:
-                response = "ℹ️ You’re not subscribed yet."
+                response = f"ℹ️ *{name}*, you’re not subscribed yet."
 
         elif command == '/notice':
             response = "🔄 Checking for updates..."
@@ -345,7 +380,7 @@ class NoticeBot:
 
 @app.route('/')
 def home():
-    return "🤖 WBSU Notice Bot v4.6 Running!"
+    return "🤖 WBSU Notice Bot v4.7 Running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
