@@ -56,6 +56,33 @@ SOURCES = [
             "items": "a",
             "ignore": ["old-notice", "archive"]
         }
+    },
+    {
+        "name": "Sahil's Test Hub",
+        "url": "https://sahilcodelab.github.io/wbsu-info/verify.html",
+        "selectors": {
+            "container": "body",   # Since all <a> are directly in <body>
+            "items": "a",
+            "ignore": []
+        }
+    },
+    {
+        "name": "WBSU Main Website",
+        "url": "https://wbsu.ac.in/web/",
+        "selectors": {
+            "container": "div.elementor-widget-container",  # Common container for links
+            "items": "a",
+            "ignore": []
+        }
+    },
+    {
+        "name": "WBSU NEP Syllabus",
+        "url": "https://wbsu.ac.in/web/nep-syllabus/",
+        "selectors": {
+            "container": "div.elementor-widget-container",  # Same structure
+            "items": "a",
+            "ignore": []
+        }
     }
 ]
 
