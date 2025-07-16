@@ -9,6 +9,11 @@ from datetime import datetime
 import pytz
 from flask import Flask, request
 from bs4 import BeautifulSoup
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -33,6 +38,7 @@ def init_data_files():
         if not os.path.exists(file):
             with open(file, 'w') as f:
                 json.dump(default, f)
+                logger.info(f"Initialized {file}")
 
 init_data_files()
 
@@ -76,25 +82,38 @@ class NoticeBot:
 
     def _load_data(self, file):
         with self.lock:
-            with open(file, 'r') as f:
-                return json.load(f)
+            try:
+                with open(file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading {file}: {e}")
+                return {"notices": {}, "last_checked": None} if file == NOTICES_FILE else {"users": {}}
 
     def _save_data(self, file, data):
         with self.lock:
-            with open(file, 'w') as f:
-                json.dump(data, f, indent=2)
+            try:
+                with open(file, 'w') as f:
+                    json.dump(data, f, indent=2)
+                logger.info(f"Saved data to {file}")
+            except Exception as e:
+                logger.error(f"Error saving {file}: {e}")
 
     def _get_current_time(self):
         return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
 
     def send_telegram_message(self, chat_id, text):
         try:
-            return requests.post(
+            response = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
-            ).json()
+                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True},
+                timeout=10
+            )
+            response.raise_for_status()
+            logger.info(f"Sent message to {chat_id}")
+            return response.json()
         except Exception as e:
-            print(f"Message error: {e}")
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+            return None
 
     def generate_ai_summary(self, text):
         try:
@@ -105,24 +124,29 @@ class NoticeBot:
                     "model": "llama3-70b-8192",
                     "messages": [{"role": "user", "content": f"Summarize this in 1 line Hinglish: {text}"}],
                     "temperature": 0.3
-                }
+                },
+                timeout=10
             )
+            res.raise_for_status()
             return res.json()['choices'][0]['message']['content']
         except Exception as e:
-            print(f"AI error: {e}")
+            logger.error(f"AI summary error: {e}")
             return text
 
     def check_for_updates(self):
+        logger.info("Checking for updates...")
         data = self._load_data(NOTICES_FILE)
         new_notices = []
 
         for source in SOURCES:
             try:
                 r = self.session.get(source['url'], timeout=15)
+                r.raise_for_status()
                 soup = BeautifulSoup(r.text, 'html.parser')
                 container = soup.select_one(source['selectors']['container'])
 
                 if not container:
+                    logger.warning(f"No container found for {source['name']}")
                     continue
 
                 for item in container.select(source['selectors']['items']):
@@ -165,19 +189,28 @@ class NoticeBot:
                         "timestamp": timestamp
                     }
 
+                    logger.info(f"New notice found: {title} ({source['name']})")
+
             except Exception as e:
-                print(f"Source error ({source['name']}): {e}")
+                logger.error(f"Error checking source {source['name']}: {e}")
 
         if new_notices:
             data["last_checked"] = self._get_current_time()
             self._save_data(NOTICES_FILE, data)
+            logger.info(f"Found {len(new_notices)} new notices")
 
         return new_notices
 
     def notify_users(self, notices):
         users_data = self._load_data(USERS_FILE)
+        if not users_data['users']:
+            logger.warning("No users subscribed to notifications")
+            return
+
         for notice in notices:
             for user_id, user_info in users_data['users'].items():
+                if not user_info.get("semesters"):
+                    continue
                 if any(sem in user_info.get("semesters", []) for sem in notice['sems']):
                     sem_names = [SEMESTERS[s]['name'] for s in notice['sems']]
                     msg = (
@@ -188,6 +221,7 @@ class NoticeBot:
                         f"⏰ {notice['timestamp']}"
                     )
                     self.send_telegram_message(user_id, msg)
+                    logger.info(f"Notified user {user_id} about notice {notice['title']}")
                     time.sleep(0.5)
 
     def handle_command(self, user_id, command):
@@ -235,7 +269,7 @@ class NoticeBot:
 
         elif command == '/notice':
             response = "🔄 Checking for updates..."
-            threading.Thread(target=self.force_check).start()
+            threading.Thread(target=self.force_check, daemon=True).start()
 
         elif re.match(r'^/[1-6]_sem_update$', command):
             sem = command.split('_')[0][1:]
@@ -252,7 +286,6 @@ class NoticeBot:
                 response = "❌ No recent notice found."
 
         else:
-            # Fuzzy title/summary search
             data = self._load_data(NOTICES_FILE)
             query = command.lower()
             matches = [n for n in data['notices'].values() if query in n['title'].lower() or query in n.get('summary', '').lower()]
@@ -269,14 +302,25 @@ class NoticeBot:
     def force_check(self):
         new = self.check_for_updates()
         if new:
+            logger.info(f"Force check found {len(new)} new notices")
             self.notify_users(new)
+        else:
+            logger.info("Force check found no new notices")
 
     def run_scheduled_checks(self):
         while True:
-            new = self.check_for_updates()
-            if new:
-                self.notify_users(new)
-            time.sleep(CHECK_INTERVAL)
+            try:
+                logger.info("Starting scheduled check")
+                new = self.check_for_updates()
+                if new:
+                    logger.info(f"Scheduled check found {len(new)} new notices")
+                    self.notify_users(new)
+                else:
+                    logger.info("Scheduled check found no new notices")
+                time.sleep(CHECK_INTERVAL)
+            except Exception as e:
+                logger.error(f"Scheduled check error: {e}")
+                time.sleep(60)  # Wait before retrying to avoid rapid failures
 
 @app.route('/')
 def home():
@@ -284,19 +328,27 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = request.json
-    if 'message' in update:
-        msg = update['message']
-        user_id = str(msg['from']['id'])
-        text = msg.get('text', '')
-        bot = NoticeBot()
-        res = bot.handle_command(user_id, text)
-        if res:
-            bot.send_telegram_message(msg['chat']['id'], res)
-    return 'OK'
+    try:
+        update = request.json
+        if 'message' in update:
+            msg = update['message']
+            user_id = str(msg['from']['id'])
+            text = msg.get('text', '')
+            bot = NoticeBot()
+            res = bot.handle_command(user_id, text)
+            if res:
+                bot.send_telegram_message(msg['chat']['id'], res)
+        return 'OK'
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return 'ERROR', 500
 
 def run_bot():
+    if not BOT_TOKEN or not GROQ_API_KEY:
+        logger.error("BOT_TOKEN or GROQ_API_KEY not set")
+        raise ValueError("Missing BOT_TOKEN or GROQ_API_KEY")
     bot = NoticeBot()
+    logger.info("Starting scheduled checks thread")
     threading.Thread(target=bot.run_scheduled_checks, daemon=True).start()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
