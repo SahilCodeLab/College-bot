@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 import pytz
-from flask import Flask
+from flask import Flask, request
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
@@ -15,7 +15,7 @@ app = Flask(__name__)
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///data.db')  # For Render PostgreSQL
+DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///data.db')
 CHECK_INTERVAL = 300  # 5 minutes
 
 # Semester configuration
@@ -38,14 +38,6 @@ SOURCES = [
             "items": "a",
             "ignore": ["old-notice", "archive"]
         }
-    },
-    {
-        "name": "BRS College",
-        "url": "https://brsnc.in/",
-        "selectors": {
-            "container": "div#notices",
-            "items": "li a"
-        }
     }
 ]
 
@@ -61,30 +53,30 @@ class NoticeBot:
             self.conn = psycopg2.connect(DATABASE_URL, sslmode='require')
         else:
             import sqlite3
-            self.conn = sqlite3.connect('data.db')
+            self.conn = sqlite3.connect('data.db', check_same_thread=False)
         
         self._init_db()
 
     def _init_db(self):
-        cur = self.conn.cursor()
-        # Create tables if not exists
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS notices (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            url TEXT,
-            source TEXT,
-            semesters TEXT,
-            timestamp TEXT
-        )""")
-        
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY,
-            semesters TEXT,
-            last_active TEXT
-        )""")
-        self.conn.commit()
+        with self.conn:
+            cur = self.conn.cursor()
+            # Create tables if not exists
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS notices (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                url TEXT,
+                source TEXT,
+                semesters TEXT,
+                timestamp TEXT
+            )""")
+            
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                semesters TEXT,
+                last_active TEXT
+            )""")
 
     def _get_current_time(self):
         return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
@@ -151,10 +143,11 @@ class NoticeBot:
                         
                     # Check if notice exists
                     notice_id = hashlib.md5(f"{title}{url}".encode()).hexdigest()
-                    cur = self.conn.cursor()
-                    cur.execute("SELECT 1 FROM notices WHERE id = ?", (notice_id,))
-                    if cur.fetchone():
-                        continue
+                    with self.conn:
+                        cur = self.conn.cursor()
+                        cur.execute("SELECT 1 FROM notices WHERE id = ?", (notice_id,))
+                        if cur.fetchone():
+                            continue
                     
                     # Detect relevant semesters
                     relevant_sems = []
@@ -169,11 +162,11 @@ class NoticeBot:
                     summary = self.generate_ai_summary(title) or title
                     
                     # Save to database
-                    cur.execute(
-                        "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?)",
-                        (notice_id, title, url, source['name'], ','.join(relevant_sems), self._get_current_time())
-                    )
-                    self.conn.commit()
+                    with self.conn:
+                        cur.execute(
+                            "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?)",
+                            (notice_id, title, url, source['name'], ','.join(relevant_sems), self._get_current_time())
+                        )
                     
                     new_notices.append({
                         "id": notice_id,
@@ -181,7 +174,8 @@ class NoticeBot:
                         "url": url,
                         "source": source['name'],
                         "sems": relevant_sems,
-                        "summary": summary
+                        "summary": summary,
+                        "timestamp": self._get_current_time()
                     })
                     
             except Exception as e:
@@ -191,37 +185,41 @@ class NoticeBot:
 
     def notify_users(self, notices):
         for notice in notices:
-            # Find users subscribed to any of the relevant semesters
-            cur = self.conn.cursor()
-            cur.execute("""
-                SELECT user_id FROM users 
-                WHERE semesters LIKE ? 
-                OR semesters LIKE ? 
-                OR semesters LIKE ?
-            """, (
-                f"%{notice['sems'][0]}%",
-                f"%,{notice['sems'][0]}%",
-                f"%{notice['sems'][0]},%"
-            ))
-            
-            users = [row[0] for row in cur.fetchall()]
-            
-            # Prepare message
-            sem_names = [SEMESTERS[sem]['name'] for sem in notice['sems']]
-            message = (
-                f"📢 *{notice['source']} Update*\n"
-                f"🎓 *For:* {', '.join(sem_names)}\n\n"
-                f"{notice['summary']}\n\n"
-                f"🔗 [View Notice]({notice['url']})\n"
-                f"⏰ {notice['timestamp']}"
-            )
-            
-            # Send to all subscribed users
-            for user_id in users:
-                self.send_telegram_message(user_id, message)
+            try:
+                # Find users subscribed to any of the relevant semesters
+                with self.conn:
+                    cur = self.conn.cursor()
+                    query = """
+                        SELECT user_id FROM users 
+                        WHERE semesters LIKE ? 
+                        OR semesters LIKE ? 
+                        OR semesters LIKE ?
+                    """
+                    params = (
+                        f"%{notice['sems'][0]}%",
+                        f"%,{notice['sems'][0]}%",
+                        f"%{notice['sems'][0]},%"
+                    )
+                    cur.execute(query, params)
+                    users = [row[0] for row in cur.fetchall()]
                 
-            # Small delay to avoid rate limits
-            time.sleep(0.5)
+                # Prepare message
+                sem_names = [SEMESTERS[sem]['name'] for sem in notice['sems']]
+                message = (
+                    f"📢 *{notice['source']} Update*\n"
+                    f"🎓 *For:* {', '.join(sem_names)}\n\n"
+                    f"{notice['summary']}\n\n"
+                    f"🔗 [View Notice]({notice['url']})\n"
+                    f"⏰ {notice['timestamp']}"
+                )
+                
+                # Send to all subscribed users
+                for user_id in users:
+                    self.send_telegram_message(user_id, message)
+                    time.sleep(0.3)  # Rate limiting
+                    
+            except Exception as e:
+                print(f"Error notifying users: {e}")
 
     def handle_command(self, user_id, command):
         command = command.lower().strip()
@@ -243,37 +241,38 @@ class NoticeBot:
         elif command.startswith('/sem'):
             sem = command[4:].strip()
             if sem in SEMESTERS:
-                cur = self.conn.cursor()
-                cur.execute("SELECT semesters FROM users WHERE user_id = ?", (user_id,))
-                result = cur.fetchone()
-                
-                current_sems = set(result[0].split(',')) if result else set()
-                
-                if sem in current_sems:
-                    current_sems.remove(sem)
-                    action = "removed from"
-                else:
-                    current_sems.add(sem)
-                    action = "added to"
-                
-                # Update database
-                cur.execute(
-                    "INSERT OR REPLACE INTO users VALUES (?, ?, ?)",
-                    (user_id, ','.join(current_sems), self._get_current_time())
-                self.conn.commit()
+                with self.conn:
+                    cur = self.conn.cursor()
+                    cur.execute("SELECT semesters FROM users WHERE user_id = ?", (user_id,))
+                    result = cur.fetchone()
+                    
+                    current_sems = set(result[0].split(',')) if result and result[0] else set()
+                    
+                    if sem in current_sems:
+                        current_sems.remove(sem)
+                        action = "removed from"
+                    else:
+                        current_sems.add(sem)
+                        action = "added to"
+                    
+                    # Update database
+                    cur.execute(
+                        "INSERT OR REPLACE INTO users VALUES (?, ?, ?)",
+                        (user_id, ','.join(current_sems), self._get_current_time())
                 
                 response = f"✅ You've been {action} {SEMESTERS[sem]['name']} updates!"
             else:
                 response = "❌ Invalid semester. Use /semlist to see options"
                 
         elif command == '/mysems':
-            cur = self.conn.cursor()
-            cur.execute("SELECT semesters FROM users WHERE user_id = ?", (user_id,))
-            result = cur.fetchone()
-            
+            with self.conn:
+                cur = self.conn.cursor()
+                cur.execute("SELECT semesters FROM users WHERE user_id = ?", (user_id,))
+                result = cur.fetchone()
+                
             if result and result[0]:
-                sems = [SEMESTERS[sem]['name'] for sem in result[0].split(',')]
-                response = f"📚 *Your Subscriptions:*\n\n" + "\n".join(sems)
+                sems = [SEMESTERS[sem]['name'] for sem in result[0].split(',') if sem in SEMESTERS]
+                response = f"📚 *Your Subscriptions:*\n\n" + "\n".join(sems) if sems else "ℹ️ No active subscriptions"
             else:
                 response = "ℹ️ You're not subscribed to any semesters. Use /sem1 to /sem6 to subscribe"
                 
