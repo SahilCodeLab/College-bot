@@ -1,4 +1,6 @@
-flask
-requests
-beautifulsoup4
-pytz
+Flask==3.0.2
+requests==2.31.0
+beautifulsoup4==4.12.3
+pytz==2024.1
+psycopg2-binary==2.9.9  # For PostgreSQL on Render
+python-dotenv==1.0.0
