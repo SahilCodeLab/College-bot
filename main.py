@@ -1,3 +1,4 @@
+
 import os
 import requests
 import hashlib
@@ -49,7 +50,7 @@ SEMESTERS = {
     "3": {"name": "3rd Semester", "keywords": ["sem 3", "semester 3", "third sem", "3rd semester", "3rd sem"]},
     "4": {"name": "4th Semester", "keywords": ["sem 4", "semester 4", "fourth sem", "4th semester", "4th sem"]},
     "5": {"name": "5th Semester", "keywords": ["sem 5", "semester 5", "fifth sem", "5th semester", "5th sem"]},
-    "6": {"name": "6th Semester", "keywords": ["sem 6", "nba sem 6", "sixth sem", "6th semester", "6th sem", "final semester"]}
+    "6": {"name": "6th Semester", "keywords": ["sem 6", "semester 6", "sixth sem", "6th semester", "6th sem", "final semester"]}
 }
 
 # Sources
@@ -181,7 +182,7 @@ class NoticeBot:
                     sems = [sem for sem, val in SEMESTERS.items() if any(kw in title_clean for kw in val['keywords'])]
                     if not sems:
                         logger.debug(f"No semesters matched for: {title}")
-                        continue werken
+                        continue
 
                     summary = self.generate_ai_summary(title)
                     timestamp = self._get_current_time()
