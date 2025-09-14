@@ -1,21 +1,17 @@
 import os
 import requests
-import hashlib
 import json
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from flask import Flask, request
 from bs4 import BeautifulSoup
 import logging
-import urllib3
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from googlesearch import search
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,390 +19,159 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Configuration
+# --- Configuration ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-CHECK_INTERVAL = 30 if os.environ.get('TEST_MODE') else 300  # 30 sec for testing, 5 min for prod
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
-NOTICES_FILE = os.path.join(DATA_DIR, 'notices.json')
+CREDENTIALS_FILE = 'credentials.json'  # Your Google API credentials
 
-# Google Sheets Setup
-SPREADSHEET_ID = '10mBF-64emzmaI-wgrTZ063rDRFbpBLVF5laXxGHfrk0'
-CREDENTIALS_FILE = 'credentials.json'  # Place your Google API credentials JSON here
+# Google Sheets for logging updates (for your frontend)
+# IMPORTANT: Use a DIFFERENT Sheet ID than your user data sheet
+UPDATES_SPREADSHEET_ID = os.environ.get('UPDATES_SPREADSHEET_ID')
 
-# Semester keywords
-SEMESTERS = {
-    "1": {"name": "1st Semester", "keywords": ["sem 1", "semester 1", "first sem", "1st semester", "1st sem"]},
-    "2": {"name": "2nd Semester", "keywords": ["sem 2", "semester 2", "second sem", "2nd semester", "2nd sem"]},
-    "3": {"name": "3rd Semester", "keywords": ["sem 3", "semester 3", "third sem", "3rd semester", "3rd sem"]},
-    "4": {"name": "4th Semester", "keywords": ["sem 4", "semester 4", "fourth sem", "4th semester", "4th sem"]},
-    "5": {"name": "5th Semester", "keywords": ["sem 5", "semester 5", "fifth sem", "5th semester", "5th sem"]},
-    "6": {"name": "6th Semester", "keywords": ["sem 6", "semester 6", "sixth sem", "6th semester", "6th sem", "final semester"]}
-}
+# --- Helper Functions ---
 
-# Sources
-SOURCES = [
-    {
-        "name": "WBSU Official",
-        "url": "https://www.wbsuexams.net/",
-        "selectors": {
-            "container": "div.notice-board",
-            "items": "a",
-            "ignore": ["old-notice", "archive"]
-        }
-    },
-    {
-        "name": "Test Hub",
-        "url": "https://sahilcodelab.github.io/wbsu-info/verify.html",
-        "selectors": {
-            "container": "body",
-            "items": "a",
-            "ignore": []
-        }
+def get_current_time():
+    """Returns the current time in IST."""
+    return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
+
+def init_google_sheets():
+    """Initializes and returns the Google Sheets client."""
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+        client = gspread.authorize(creds)
+        logger.info("Successfully connected to Google Sheets.")
+        return client
+    except Exception as e:
+        logger.error(f"Google Sheets initialization error: {e}")
+        return None
+
+# Initialize Google Sheets client globally
+gc = init_google_sheets()
+
+# --- Core Bot Functions ---
+
+def send_telegram_message(chat_id, text):
+    """Sends a message to a given Telegram chat ID."""
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
     }
-]
+    try:
+        response = requests.post(api_url, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Message sent to {chat_id}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send message to {chat_id}: {e}")
 
-class NoticeBot:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "WBSU Notice Bot v4.7"})
-        self.lock = threading.Lock()
-        self.gc = self._init_google_sheets()
+def realtime_wbsu_search(query):
+    """
+    Performs a real-time search on the WBSU website using Google Search
+    and returns the top result's title and URL.
+    """
+    logger.info(f"Performing real-time search for: {query}")
+    try:
+        # We add "site:wbsu.ac.in" or "site:wbsuexams.net" to limit search to the university sites
+        search_query = f"{query} site:wbsu.ac.in OR site:wbsuexams.net"
+        
+        # googlesearch-python library returns a generator
+        search_results = search(search_query, num=1, stop=1, pause=2)
+        
+        top_result_url = next(search_results, None)
 
-    def _init_google_sheets(self):
-        try:
-            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-            client = gspread.authorize(creds)
-            logger.info("Connected to Google Sheets")
-            return client
-        except Exception as e:
-            logger.error(f"Google Sheets initialization error: {e}")
-            raise
+        if not top_result_url:
+            logger.warning(f"No search results found for query: {query}")
+            return None, "Is vishay par koi jaankari nahi mili.", None
 
-    def _load_data(self, file=None):
-        if file == NOTICES_FILE:
-            with self.lock:
-                try:
-                    with open(file, 'r') as f:
-                        return json.load(f)
-                except Exception as e:
-                    logger.error(f"Error loading {file}: {e}")
-                    return {"notices": {}, "last_checked": None}
-        else:  # Load users from Google Sheets
-            try:
-                sheet = self.gc.open_by_key(SPREADSHEET_ID).sheet1
-                records = sheet.get_all_records()
-                users = {}
-                for row in records:
-                    user_id = str(row.get('User ID', ''))
-                    name = row.get('Name', '')
-                    semesters = row.get('Semesters', '').split(',') if row.get('Semesters') else []
-                    semesters = [s.strip() for s in semesters if s.strip() in SEMESTERS]
-                    if user_id:
-                        users[user_id] = {"name": name, "semesters": semesters}
-                logger.info(f"Loaded {len(users)} users from Google Sheets")
-                return {"users": users}
-            except Exception as e:
-                logger.error(f"Error loading users from Google Sheets: {e}")
-                return {"users": {}}
+        # Scrape the page title for a better summary
+        response = requests.get(top_result_url, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        title = soup.title.string.strip() if soup.title else "Result Page"
 
-    def _save_data(self, file=None, data=None):
-        if file == NOTICES_FILE:
-            with self.lock:
-                try:
-                    with open(file, 'w') as f:
-                        json.dump(data, f, indent=2)
-                    logger.info(f"Saved data to {file}")
-                except Exception as e:
-                    logger.error(f"Error saving {file}: {e}")
-        else:  # Save users to Google Sheets
-            try:
-                sheet = self.gc.open_by_key(SPREADSHEET_ID).sheet1
-                sheet.clear()
-                sheet.append_row(['User ID', 'Name', 'Semesters'])
-                for user_id, info in data['users'].items():
-                    semesters = ','.join(info.get('semesters', []))
-                    sheet.append_row([user_id, info.get('name', ''), semesters])
-                logger.info(f"Saved {len(data['users'])} users to Google Sheets")
-            except Exception as e:
-                logger.error(f"Error saving users to Google Sheets: {e}")
+        return title, f"Mili jaankari ke anusaar:\n\n*Title:* {title}\n\n*Link:* {top_result_url}", top_result_url
 
-    def _get_current_time(self):
-        return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as e:
+        logger.error(f"Error during real-time search for '{query}': {e}")
+        return None, "Search karte samay ek samasya aa gayi. Kripya baad mein prayas karein.", None
 
-    def _clean_old_notices(self, data):
-        cutoff = datetime.now(pytz.timezone('Asia/Kolkata')) - timedelta(days=30)
-        data['notices'] = {
-            k: v for k, v in data['notices'].items()
-            if datetime.strptime(v['timestamp'], "%Y-%m-%d %H:%M:%S") > cutoff
-        }
-        return data
+def log_update_to_sheet(topic, details, link):
+    """
+    Logs the new information found into a dedicated Google Sheet.
+    This sheet can be used by your frontend.
+    """
+    if not gc or not UPDATES_SPREADSHEET_ID:
+        logger.error("Google Sheets client or UPDATES_SPREADSHEET_ID not configured. Cannot log update.")
+        return
 
-    def send_telegram_message(self, chat_id, text):
-        try:
-            response = requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True},
-                timeout=10
-            )
-            response.raise_for_status()
-            logger.info(f"Sent message to {chat_id}: {text[:50]}...")
-            return response.json()
-        except Exception as e:
-            logger.error(f"Failed to send message to {chat_id}: {e}")
-            return None
+    try:
+        sheet = gc.open_by_key(UPDATES_SPREADSHEET_ID).sheet1
+        
+        # Ensure header row exists
+        if sheet.cell(1, 1).value != 'Timestamp':
+             sheet.insert_row(['Timestamp', 'Topic/Query', 'Details', 'Source Link'], 1)
 
-    def generate_ai_summary(self, text):
-        try:
-            res = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                json={
-                    "model": "llama3-70b-8192",
-                    "messages": [{"role": "user", "content": f"Summarize this in 1 line Hinglish: {text}"}],
-                    "temperature": 0.3
-                },
-                timeout=10
-            )
-            res.raise_for_status()
-            return res.json()['choices'][0]['message']['content']
-        except Exception as e:
-            logger.error(f"AI summary error: {e}")
-            return text
+        row_to_add = [get_current_time(), topic, details, link]
+        sheet.append_row(row_to_add)
+        logger.info(f"Successfully logged new update to sheet: {topic}")
+    except Exception as e:
+        logger.error(f"Failed to log update to Google Sheet: {e}")
 
-    def check_for_updates(self):
-        logger.info("Checking for updates...")
-        data = self._load_data(NOTICES_FILE)
-        new_notices = []
+def handle_request(user_id, text):
+    """Handles incoming user messages."""
+    
+    # Simple command handling
+    if text.lower().strip() == '/start':
+        response_text = (
+            "Namaste! 🙏\n"
+            "Main WBSU ka real-time information bot hoon.\n\n"
+            "Aap kisi bhi semester, subject, ya topic (jaise '3rd sem zoology syllabus' ya 'latest exam notice') ke baare mein sawaal pooch sakte hain."
+        )
+        send_telegram_message(user_id, response_text)
+        return
 
-        for source in SOURCES:
-            try:
-                logger.info(f"Scraping {source['name']} ({source['url']})")
-                r = self.session.get(source['url'], timeout=15, verify=False)  # Bypass SSL verification
-                r.raise_for_status()
-                soup = BeautifulSoup(r.text, 'html.parser')
-                container = soup.select_one(source['selectors']['container'])
+    # Treat any other message as a real-time query
+    send_telegram_message(user_id, f"🔄 Aapke sawaal '{text}' ke liye WBSU website par jaankari dhoond raha hoon...")
+    
+    title, response_text, url = realtime_wbsu_search(text)
+    
+    send_telegram_message(user_id, response_text)
 
-                if not container:
-                    logger.warning(f"No container found for {source['name']}")
-                    continue
+    # If a valid result was found, log it to the Google Sheet for the frontend
+    if url:
+        # We pass the original query as the topic
+        log_update_to_sheet(topic=text, details=title, link=url)
 
-                items = container.select(source['selectors']['items'])
-                logger.info(f"Found {len(items)} items in {source['name']}")
 
-                for item in items:
-                    if any(ignore in item.get('class', []) for ignore in source['selectors'].get('ignore', [])):
-                        continue
-
-                    title = item.get_text(strip=True)
-                    href = item.get('href')
-                    if not title or not href or len(title) < 5:
-                        logger.debug(f"Skipping item: title={title}, href={href}")
-                        continue
-
-                    url = href if href.startswith('http') else source['url'].rstrip('/') + '/' + href.lstrip('/')
-                    notice_id = hashlib.md5(f"{title}{url}".encode()).hexdigest()
-                    if notice_id in data['notices']:
-                        logger.debug(f"Notice already exists: {title}")
-                        continue
-
-                    title_clean = title.lower().replace('-', ' ').replace('–', ' ')
-                    sems = [sem for sem, val in SEMESTERS.items() if any(kw in title_clean for kw in val['keywords'])]
-                    if not sems:
-                        logger.debug(f"No semesters matched for: {title}")
-                        continue
-
-                    summary = self.generate_ai_summary(title)
-                    timestamp = self._get_current_time()
-
-                    new_notices.append({
-                        "id": notice_id,
-                        "title": title,
-                        "url": url,
-                        "source": source['name'],
-                        "sems": sems,
-                        "summary": summary,
-                        "timestamp": timestamp
-                    })
-
-                    data['notices'][notice_id] = {
-                        "title": title,
-                        "url": url,
-                        "source": source['name'],
-                        "sems": sems,
-                        "timestamp": timestamp
-                    }
-
-                    logger.info(f"New notice found: {title} ({source['name']}) for semesters: {sems}")
-
-            except Exception as e:
-                logger.error(f"Error checking source {source['name']}: {e}")
-
-        if new_notices:
-            data = self._clean_old_notices(data)
-            data["last_checked"] = self._get_current_time()
-            self._save_data(NOTICES_FILE, data)
-            logger.info(f"Found {len(new_notices)} new notices")
-
-        return new_notices
-
-    def notify_users(self, notices):
-        users_data = self._load_data()  # Load from Google Sheets
-        if not users_data['users']:
-            logger.warning("No users subscribed to notifications")
-            return
-
-        logger.info(f"Processing {len(notices)} new notices for {len(users_data['users'])} users")
-        for notice in notices:
-            for user_id, user_info in users_data['users'].items():
-                semesters = user_info.get("semesters", [])
-                name = user_info.get("name", "User")
-                if not semesters:
-                    logger.debug(f"User {user_id} ({name}) has no semester subscriptions")
-                    continue
-                if any(sem in semesters for sem in notice['sems']):
-                    sem_names = [SEMESTERS[s]['name'] for s in notice['sems']]
-                    msg = (
-                        f"Hi *{name}*! 📢 *{notice['source']} Notice*\n"
-                        f"🎓 *For:* {', '.join(sem_names)}\n\n"
-                        f"{notice['summary']}\n\n"
-                        f"🔗 [View Notice]({notice['url']})\n"
-                        f"⏰ {notice['timestamp']}"
-                    )
-                    self.send_telegram_message(user_id, msg)
-                    logger.info(f"Notified user {user_id} ({name}) about notice: {notice['title']}")
-                    time.sleep(0.5)
-
-    def handle_command(self, user_id, command):
-        command = command.lower().strip()
-        response = None
-        users_data = self._load_data()  # Load from Google Sheets
-
-        if command == '/start':
-            response = (
-                "🫂 *WBSU Notice Bot v4.7*\n\n"
-                "🔹 /mysems - Your subscriptions\n"
-                "🔹 /semlist - All semester commands\n"
-                "🔹 /notice - Check for updates\n"
-                "🔹 /1_sem_update to /6_sem_update - Latest notice"
-            )
-
-        elif command == '/semlist':
-            response = "🎓 *Available Semesters:*\n\n" + "\n".join([f"/sem{sem} - {data['name']}" for sem, data in SEMESTERS.items()])
-
-        elif command.startswith('/sem'):
-            sem = command[4:].strip()
-            if sem in SEMESTERS:
-                user_id = str(user_id)
-                if user_id not in users_data["users"]:
-                    users_data["users"][user_id] = {"name": "User", "semesters": []}
-                sems = users_data["users"][user_id]["semesters"]
-                if sem in sems:
-                    sems.remove(sem)
-                    action = "removed"
-                else:
-                    sems.append(sem)
-                    action = "added"
-                self._save_data(data=users_data)
-                response = f"✅ {SEMESTERS[sem]['name']} {action} successfully!"
-            else:
-                response = "❌ Invalid semester."
-
-        elif command == '/mysems':
-            info = users_data["users"].get(str(user_id), {})
-            sems = info.get("semesters", [])
-            name = info.get("name", "User")
-            if sems:
-                response = f"📚 *{name}'s Subscriptions:*\n" + "\n".join([SEMESTERS[s]['name'] for s in sems])
-            else:
-                response = f"ℹ️ *{name}*, you’re not subscribed yet."
-
-        elif command == '/notice':
-            response = "🔄 Checking for updates..."
-            threading.Thread(target=self.force_check, daemon=True).start()
-
-        elif re.match(r'^/[1-6]_sem_update$', command):
-            sem = command.split('_')[0][1:]
-            data = self._load_data(NOTICES_FILE)
-            notices = [n for n in data['notices'].values() if sem in n.get("sems", [])]
-            if notices:
-                latest = sorted(notices, key=lambda n: n['timestamp'], reverse=True)[0]
-                response = (
-                    f"📢 *Latest Notice for {SEMESTERS[sem]['name']}*\n\n"
-                    f"{latest['title']}\n"
-                    f"🔗 [View]({latest['url']})\n⏰ {latest['timestamp']}"
-                )
-            else:
-                response = "❌ No recent notice found."
-
-        else:
-            data = self._load_data(NOTICES_FILE)
-            query = command.lower()
-            matches = [n for n in data['notices'].values() if query in n['title'].lower() or query in n.get('summary', '').lower()]
-            if matches:
-                response = "🔎 *Matching Notices:*\n\n"
-                for m in matches[:3]:
-                    response += f"• [{m['title']}]({m['url']})\n"
-            else:
-                ai = self.generate_ai_summary(f"User asked: {command}. Respond as notice assistant.")
-                response = ai or "🤖 Sorry, couldn't find anything."
-
-        return response
-
-    def force_check(self):
-        new = self.check_for_updates()
-        if new:
-            logger.info(f"Force check found {len(new)} new notices")
-            self.notify_users(new)
-        else:
-            logger.info("Force check found no new notices")
-
-    def run_scheduled_checks(self):
-        while True:
-            try:
-                logger.info("Scheduled check thread alive")
-                new = self.check_for_updates()
-                if new:
-                    logger.info(f"Scheduled check found {len(new)} new notices")
-                    self.notify_users(new)
-                else:
-                    logger.info("Scheduled check found no new notices")
-                time.sleep(CHECK_INTERVAL)
-            except Exception as e:
-                logger.error(f"Scheduled check error: {e}")
-                time.sleep(60)
+# --- Flask Web Server ---
 
 @app.route('/')
 def home():
-    return "🤖 WBSU Notice Bot v4.7 Running!"
+    return "WBSU Real-time Bot is running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
         update = request.json
-        if 'message' in update:
-            msg = update['message']
-            user_id = str(msg['from']['id'])
-            text = msg.get('text', '')
-            bot = NoticeBot()
-            res = bot.handle_command(user_id, text)
-            if res:
-                bot.send_telegram_message(msg['chat']['id'], res)
-        return 'OK'
+        if 'message' in update and 'text' in update['message']:
+            user_id = update['message']['chat']['id']
+            text = update['message']['text']
+            
+            # Run the handler in a separate thread to avoid Telegram timeouts
+            threading.Thread(target=handle_request, args=(user_id, text)).start()
+            
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return 'ERROR', 500
+        logger.error(f"Error in webhook: {e}")
+    
+    return "OK", 200
 
 def run_bot():
-    if not BOT_TOKEN or not GROQ_API_KEY:
-        logger.error("BOT_TOKEN or GROQ_API_KEY not set")
-        raise ValueError("Missing BOT_TOKEN or GROQ_API_KEY")
-    bot = NoticeBot()
-    logger.info("Starting scheduled checks thread")
-    threading.Thread(target=bot.run_scheduled_checks, daemon=True).start()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    if not BOT_TOKEN or not UPDATES_SPREADSHEET_ID:
+        raise ValueError("BOT_TOKEN and UPDATES_SPREADSHEET_ID environment variables must be set.")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
 if __name__ == '__main__':
     run_bot()
+
