@@ -1,145 +1,166 @@
 import os
 import requests
 import json
-import re
-import threading
-import time
-from datetime import datetime
-import pytz
 from flask import Flask, request
 from bs4 import BeautifulSoup
 import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import threading
+from datetime import datetime
+import pytz
 
-# Configure logging
+# --- Basic Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 app = Flask(__name__)
 
-# --- Configuration ---
+# --- Environment Variables ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 CREDENTIALS_FILE = 'credentials.json'
 UPDATES_SPREADSHEET_ID = os.environ.get('UPDATES_SPREADSHEET_ID')
-
-# New environment variables for the official Google Search API
 GOOGLE_SEARCH_API_KEY = os.environ.get('GOOGLE_SEARCH_API_KEY')
-GOOGLE_SEARCH_CX = os.environ.get('GOOGLE_SEARCH_CX') # Your Programmable Search Engine ID
+GOOGLE_SEARCH_CX = os.environ.get('GOOGLE_SEARCH_CX')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY') # <<< NEW: For the bot's "brain"
 
-# --- Helper Functions ---
-
-def get_current_time():
-    """Returns the current time in IST."""
-    return datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d %H:%M:%S")
-
+# --- Google Sheets Initialization ---
 def init_google_sheets():
-    """Initializes and returns the Google Sheets client."""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-        client = gspread.authorize(creds)
-        logger.info("Successfully connected to Google Sheets.")
-        return client
+        return gspread.authorize(creds)
     except Exception as e:
         logger.error(f"Google Sheets initialization error: {e}")
         return None
-
-# Initialize Google Sheets client globally
 gc = init_google_sheets()
 
-# --- Core Bot Functions ---
+# --- TOOL FUNCTIONS (Bot ke alag-alag kaam) ---
 
-def send_telegram_message(chat_id, text):
-    """Sends a message to a given Telegram chat ID."""
-    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True
-    }
+def general_search(query):
+    # <<< MODIFIED: This is now a "tool"
+    logger.info(f"Using general search tool for: {query}")
+    # This is the same search function as before
+    search_url = "https://www.googleapis.com/customsearch/v1"
+    search_query = f"{query} site:wbsu.ac.in OR site:wbsuexams.net"
+    params = {'key': GOOGLE_SEARCH_API_KEY, 'cx': GOOGLE_SEARCH_CX, 'q': search_query, 'num': 1}
     try:
-        response = requests.post(api_url, json=payload, timeout=10)
-        response.raise_for_status()
-        logger.info(f"Message sent to {chat_id}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to send message to {chat_id}: {e}")
-
-def realtime_wbsu_search(query):
-    """
-    Performs a real-time search using the official Google Custom Search JSON API.
-    """
-    logger.info(f"Performing official API search for: {query}")
-    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_CX:
-        logger.error("Google Search API Key or CX is not set in environment variables.")
-        return None, "Search feature theek se configure nahi hai. Administrator se sampark karein.", None
-
-    try:
-        search_url = "https://www.googleapis.com/customsearch/v1"
-        # We add "site:wbsu.ac.in" or "site:wbsuexams.net" to the query itself
-        search_query = f"{query} site:wbsu.ac.in OR site:wbsuexams.net"
-        params = {
-            'key': GOOGLE_SEARCH_API_KEY,
-            'cx': GOOGLE_SEARCH_CX,
-            'q': search_query,
-            'num': 1
-        }
-        
         response = requests.get(search_url, params=params, timeout=10)
         response.raise_for_status()
-        search_results = response.json()
-
-        if 'items' not in search_results or not search_results['items']:
-            logger.warning(f"No API search results for query: {query}")
-            return None, "Is vishay par koi jaankari nahi mili.", None
-
-        top_result = search_results['items'][0]
-        title = top_result.get('title', 'No Title')
-        url = top_result.get('link')
-        
-        response_text = f"Mili jaankari ke anusaar:\n\n*Title:* {title}\n\n*Link:* {url}"
-        return title, response_text, url
-
+        results = response.json()
+        if 'items' in results and results['items']:
+            item = results['items'][0]
+            return f"Mili jaankari ke anusaar:\n\n*Title:* {item.get('title')}\n*Link:* {item.get('link')}"
+        return "Is vishay par koi jaankari nahi mili."
     except Exception as e:
-        logger.error(f"Error during API search for '{query}': {e}")
-        return None, "Search karte samay ek takneeki samasya aa gayi. Kripya baad mein prayas karein.", None
+        logger.error(f"General search tool error: {e}")
+        return "Search karte samay ek takneeki samasya aa gayi."
 
-def log_update_to_sheet(topic, details, link):
-    """Logs the new information found into a dedicated Google Sheet."""
-    if not gc or not UPDATES_SPREADSHEET_ID:
-        return
+def scrape_syllabus(subject, semester):
+    # <<< NEW: Placeholder for the syllabus scraper tool
+    logger.info(f"Using syllabus tool for: {subject} Sem {semester}")
+    # Yahan hum syllabus dhoondne ka code likhenge. Abhi ke liye placeholder:
+    return f"Syllabus for *{subject} (Semester {semester})* abhi uplabdh nahi hai. Main is feature par kaam kar raha hoon."
+
+def check_results(semester):
+    # <<< NEW: Placeholder for the result checker tool
+    logger.info(f"Using result checker tool for: Sem {semester}")
+    # Yahan hum result check karne ka code likhenge. Abhi ke liye placeholder:
+    return f"Semester {semester} ka result abhi tak nahi aaya hai. Jaise hi aayega, main update karunga."
+
+def conversational_chat(user_message):
+    # <<< NEW: Tool for general chat
+    logger.info("Using conversational chat tool")
+    if "hii" in user_message.lower() or "hello" in user_message.lower():
+        return "Hello! Main WBSU Assistant. Aapki kya sahayata kar sakta hoon?"
+    return "Main aapki baat samajh nahi paya. Aap syllabus, result, ya notices ke baare mein pooch sakte hain."
+
+# --- The "Brain" of the Bot (LLM Router) ---
+
+def get_intent_from_llm(user_text):
+    # <<< NEW: This is the core logic that understands the user
+    if not GROQ_API_KEY:
+        logger.error("GROQ_API_KEY not set!")
+        return {"tool": "error", "message": "AI model theek se configure nahi hai."}
+
+    system_prompt = """
+    You are a helpful assistant for a West Bengal State University (WBSU) bot.
+    Your job is to understand the user's request and decide which tool to use.
+    The user is a student who speaks Hinglish.
+
+    Here are the available tools:
+    1. 'get_syllabus': Use this if the user is asking for a syllabus for a specific subject and semester.
+    2. 'check_result': Use this if the user is asking about exam results for a specific semester.
+    3. 'general_search': Use this for any other specific information request about WBSU (like notices, admission, etc.).
+    4. 'chat': Use this for general greetings (hi, hello) or conversational messages that are not asking for information.
+
+    You must respond in JSON format with the chosen "tool" and the "parameters" extracted from the user's text.
+    For example:
+    User: "3rd sem history syllabus ka pdf hai?" -> {"tool": "get_syllabus", "parameters": {"subject": "History", "semester": "3"}}
+    User: "wbsu 2nd sem result kab aayega" -> {"tool": "check_result", "parameters": {"semester": "2"}}
+    User: "latest notice" -> {"tool": "general_search", "parameters": {"query": "latest notice"}}
+    User: "hello" -> {"tool": "chat", "parameters": {}}
+    """
+
     try:
-        sheet = gc.open_by_key(UPDATES_SPREADSHEET_ID).sheet1
-        if sheet.cell(1, 1).value != 'Timestamp':
-             sheet.insert_row(['Timestamp', 'Topic/Query', 'Details', 'Source Link'], 1)
-        row_to_add = [get_current_time(), topic, details, link]
-        sheet.append_row(row_to_add)
-        logger.info(f"Successfully logged new update to sheet: {topic}")
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "llama3-8b-8192",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text}
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"}
+            }
+        )
+        response.raise_for_status()
+        intent_data = response.json()['choices'][0]['message']['content']
+        return json.loads(intent_data)
     except Exception as e:
-        logger.error(f"Failed to log update to Google Sheet: {e}")
+        logger.error(f"LLM intent error: {e}")
+        # Fallback to general search if LLM fails
+        return {"tool": "general_search", "parameters": {"query": user_text}}
+
+# --- MODIFIED Main Handler ---
 
 def handle_request(user_id, text):
-    """Handles incoming user messages."""
-    if text.lower().strip() == '/start':
-        response_text = (
-            "Namaste! 🙏\n"
-            "Main WBSU ka real-time information bot hoon.\n\n"
-            "Aap kisi bhi semester, subject, ya topic (jaise '3rd sem zoology syllabus') ke baare mein sawaal pooch sakte hain."
-        )
-        send_telegram_message(user_id, response_text)
-        return
+    # <<< MODIFIED: This is now a router that uses the LLM's brain
+    send_telegram_message(user_id, "Soch raha hoon...") # Thinking...
 
-    send_telegram_message(user_id, f"🔄 Aapke sawaal '{text}' ke liye jaankari dhoond raha hoon...")
-    title, response_text, url = realtime_wbsu_search(text)
-    send_telegram_message(user_id, response_text)
-    if url:
-        log_update_to_sheet(topic=text, details=title, link=url)
+    # Step 1: Understand user's intent
+    intent = get_intent_from_llm(text)
+    tool_to_use = intent.get("tool")
+    parameters = intent.get("parameters", {})
+    
+    final_response = ""
 
-# --- Flask Web Server ---
+    # Step 2: Call the appropriate tool based on intent
+    if tool_to_use == "get_syllabus":
+        final_response = scrape_syllabus(parameters.get("subject", "N/A"), parameters.get("semester", "N/A"))
+    elif tool_to_use == "check_result":
+        final_response = check_results(parameters.get("semester", "N/A"))
+    elif tool_to_use == "general_search":
+        final_response = general_search(parameters.get("query", text))
+    elif tool_to_use == "chat":
+        final_response = conversational_chat(text)
+    elif tool_to_use == "error":
+        final_response = intent.get("message")
+    else:
+        final_response = "Main aapki request samajh nahi paya. Main general search kar raha hoon."
+        final_response += "\n" + general_search(text)
+        
+    # Step 3: Send the final answer to the user
+    send_telegram_message(user_id, final_response)
+    
+    # Optional: Log the interaction to Google Sheets
+    # log_update_to_sheet(text, final_response, tool_to_use)
+
+# --- Flask Web Server (No changes needed here) ---
+
 @app.route('/')
-def home():
-    return "WBSU Real-time Bot is running!"
+def home(): return "WBSU AI Assistant is running!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -154,10 +175,8 @@ def webhook():
     return "OK", 200
 
 def run_bot():
-    if not BOT_TOKEN or not UPDATES_SPREADSHEET_ID:
-        raise ValueError("BOT_TOKEN and UPDATES_SPREADSHEET_ID must be set.")
-    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_CX:
-        raise ValueError("GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX must be set.")
+    if not all([BOT_TOKEN, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX, GROQ_API_KEY]):
+        raise ValueError("One or more required environment variables are not set.")
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
 if __name__ == '__main__':
